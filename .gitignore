@@ -1,0 +1,36 @@
+node_modules/
+dist/
+.vercel/
+
+# Credenciais e configuracoes locais
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Sessao e cache do WhatsApp (nunca versionar)
+.wwebjs_auth/
+.wwebjs_cache/
+whatsapp-session*/
+**/whatsapp-session*/
+
+# Estado de execucao e dados operacionais
+runtime/
+**/runtime/
+.runtime/
+backups/
+**/backups/
+*.log
+runtime-whatsapp-qr.png
+
+# Inventarios privados e material temporario
+docs/cloud-inventory.md
+.codex*/
+reports/
+outputs/
+tmp/
+exports/
+

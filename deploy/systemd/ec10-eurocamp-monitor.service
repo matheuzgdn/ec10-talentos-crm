@@ -1,0 +1,14 @@
+[Unit]
+Description=EC10 Eurocamp Meta Ads Cloud Monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=opc
+WorkingDirectory=/home/opc/cliente-whatsapp-crm
+Environment=NODE_ENV=production
+EnvironmentFile=/etc/ec10/eurocamp-monitor.env
+ExecStart=/usr/bin/node scripts/eurocamp-cloud-monitor.mjs
+NoNewPrivileges=true
+PrivateTmp=true

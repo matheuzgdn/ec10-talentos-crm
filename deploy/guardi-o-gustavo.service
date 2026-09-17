@@ -1,0 +1,10 @@
+[Unit]
+Description=Guardiao Gustavo EC10 - recupera conversas sem resposta
+After=network-online.target cliente-whatsapp-crm-bot.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=opc
+WorkingDirectory=/home/opc/cliente-whatsapp-crm
+ExecStart=/usr/bin/python3 scripts/guardi_o_gustavo.py

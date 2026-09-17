@@ -1,0 +1,12 @@
+[Unit]
+Description=Executa o Guardiao Gustavo EC10 periodicamente
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+RandomizedDelaySec=15
+Persistent=true
+Unit=guardi-o-gustavo.service
+
+[Install]
+WantedBy=timers.target

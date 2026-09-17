@@ -1,0 +1,13 @@
+[Unit]
+Description=Executa o monitor Eurocamp a cada 15 minutos
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+AccuracySec=30s
+RandomizedDelaySec=20s
+Persistent=true
+Unit=ec10-eurocamp-monitor.service
+
+[Install]
+WantedBy=timers.target

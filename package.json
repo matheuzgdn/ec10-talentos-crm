@@ -1,0 +1,33 @@
+{
+  "name": "cliente-whatsapp-crm",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:painel": "vite apps/painel --host 0.0.0.0 --port 5173",
+    "dev:bot": "npm --workspace @crm/bot run dev",
+    "build": "npm --workspaces --if-present run build",
+    "typecheck": "npm --workspaces --if-present run typecheck",
+    "test:bot": "npm --workspace @crm/bot run build && node scripts/bot-flow-simulations.mjs && node scripts/bot-flow-adversarial.mjs && node scripts/ollama-whatsapp-watchdog.mjs --self-test",
+    "test:bot:ollama100": "npm --workspace @crm/bot run build && node scripts/bot-ollama-100-tests.mjs --full-ollama",
+    "audit:bot": "node scripts/audit-bot-integrity.mjs",
+    "watchdog:ollama": "node scripts/ollama-whatsapp-watchdog.mjs --apply --limit 20",
+    "campaign:revela": "node scripts/revela-priority-campaign.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.20.0",
+    "@types/qrcode": "^1.5.6",
+    "playwright": "^1.60.0"
+  },
+  "dependencies": {
+    "pg": "^8.21.0",
+    "qrcode": "^1.5.4"
+  }
+}
