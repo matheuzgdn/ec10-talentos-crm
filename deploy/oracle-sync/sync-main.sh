@@ -5,8 +5,9 @@ REPOSITORY_URL="${EC10_REPOSITORY_URL:-https://github.com/matheuzgdn/ec10-talent
 BRANCH="${EC10_DEPLOY_BRANCH:-main}"
 DEPLOY_ROOT="${EC10_DEPLOY_ROOT:-/home/opc/ec10-github-sync}"
 LEGACY_ROOT="${EC10_LEGACY_ROOT:-/home/opc/cliente-whatsapp-crm}"
-CURRENT_LINK="${EC10_CURRENT_LINK:-/home/opc/ec10-current}"
 BOT_SERVICE="${EC10_BOT_SERVICE:-cliente-whatsapp-crm-bot.service}"
+SERVICE_OVERRIDE_DIR="/etc/systemd/system/$BOT_SERVICE.d"
+SERVICE_OVERRIDE_FILE="$SERVICE_OVERRIDE_DIR/90-github-release.conf"
 MIRROR_DIR="$DEPLOY_ROOT/repository.git"
 RELEASES_DIR="$DEPLOY_ROOT/releases"
 STATE_FILE="$DEPLOY_ROOT/deployed-commit"
@@ -82,14 +83,15 @@ for persistent_path in .env .env.local whatsapp-session whatsapp-session-mentori
   fi
 done
 
-previous_target="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
-if [[ -z "$previous_target" ]]; then
-  previous_target="$LEGACY_ROOT"
-fi
+previous_target="$(systemctl show "$BOT_SERVICE" -p WorkingDirectory --value)"
+if [[ -z "$previous_target" ]]; then previous_target="$LEGACY_ROOT"; fi
 
-next_link="$DEPLOY_ROOT/current-next-$$"
-ln -s "$release_dir" "$next_link"
-mv -Tf "$next_link" "$CURRENT_LINK"
+override_candidate="$DEPLOY_ROOT/90-github-release-$$.conf"
+printf '[Service]\nWorkingDirectory=%s\n' "$release_dir" >"$override_candidate"
+sudo -n mkdir -p "$SERVICE_OVERRIDE_DIR"
+sudo -n install -m 0644 "$override_candidate" "$SERVICE_OVERRIDE_FILE"
+rm -f -- "$override_candidate"
+sudo -n systemctl daemon-reload
 
 write_status "restarting" "$target_commit" "bot_restart"
 sudo -n systemctl restart "$BOT_SERVICE"
@@ -107,9 +109,11 @@ for _ in $(seq 1 36); do
 done
 
 if [[ "$healthy" != "true" ]]; then
-  rollback_link="$DEPLOY_ROOT/current-rollback-$$"
-  ln -s "$previous_target" "$rollback_link"
-  mv -Tf "$rollback_link" "$CURRENT_LINK"
+  rollback_candidate="$DEPLOY_ROOT/90-github-rollback-$$.conf"
+  printf '[Service]\nWorkingDirectory=%s\n' "$previous_target" >"$rollback_candidate"
+  sudo -n install -m 0644 "$rollback_candidate" "$SERVICE_OVERRIDE_FILE"
+  rm -f -- "$rollback_candidate"
+  sudo -n systemctl daemon-reload
   sudo -n systemctl restart "$BOT_SERVICE"
   write_status "rolled_back" "$target_commit" "health_check_failed"
   exit 1
@@ -117,4 +121,3 @@ fi
 
 printf '%s\n' "$target_commit" >"$STATE_FILE"
 write_status "ready" "$target_commit" "deployed"
-
