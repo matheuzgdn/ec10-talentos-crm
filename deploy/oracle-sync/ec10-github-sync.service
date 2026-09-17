@@ -7,6 +7,5 @@ Wants=network-online.target
 Type=oneshot
 User=opc
 WorkingDirectory=/home/opc
-ExecStart=/home/opc/ec10-github-sync/sync-main.sh
+ExecStart=/usr/bin/bash /home/opc/ec10-github-sync/sync-main.sh
 TimeoutStartSec=25min
-
