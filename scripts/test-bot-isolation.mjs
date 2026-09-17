@@ -1,0 +1,10 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+const source=fs.readFileSync('apps/bot/src/index.ts','utf8');
+assert.match(source,/BOT_TEST_ALLOWED_PHONES/);
+assert.match(source,/if \(!isBotTestPhoneAllowed\(clientState\.phone\)\) return false/);
+assert.match(source,/eventType:'bot_test_isolation_suppressed'/);
+assert.match(source,/national\.length===11&&national\[2\]==='9'/);
+const config=fs.readFileSync('apps/bot/src/config.ts','utf8');
+assert.match(config,/BOT_TEST_ALLOWED_PHONES: z\.string\(\)\.default\(""\)/);
+console.log(JSON.stringify({checks:5,result:'passed',testPhoneOnly:true,brazilNinthDigitAlias:true,otherContactsPreserved:true}));

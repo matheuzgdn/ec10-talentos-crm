@@ -204,7 +204,12 @@ export async function ensureSeller(request: any, options: { requireActive?: bool
   if (!row) throw new HttpError(401, "Sessao invalida ou expirada.");
 
   await pool.query(
-    "update public.crm_auth_sessions set last_seen_at = now() where token_hash = $1",
+    `
+      update public.crm_auth_sessions
+      set last_seen_at = now()
+      where token_hash = $1
+        and last_seen_at < now() - interval '5 minutes'
+    `,
     [hashToken(token)]
   );
 
@@ -230,5 +235,6 @@ export function handleApiError(response: any, error: unknown) {
     return;
   }
 
-  response.status(500).json({ error: error instanceof Error ? error.message : "Erro interno." });
+  console.error("Unhandled API error", error);
+  response.status(500).json({ error: "Erro interno." });
 }

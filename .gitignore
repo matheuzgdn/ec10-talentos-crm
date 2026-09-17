@@ -34,3 +34,29 @@ outputs/
 tmp/
 exports/
 
+# Bancos, dumps, chaves e artefatos locais
+*.sqlite
+*.sqlite3
+*.db
+*.dump
+*.sql.gz
+*.tar.gz
+*.zip
+*.bak
+*.bak-*
+*.tmp
+*.pid
+*.sock
+*.png
+!apps/**/public/**/*.png
+!media/**/*.png
+
+# Ferramentas e caches do operador
+.agents/
+.codex/
+.codex-*/
+test-results/
+coverage/
+__pycache__/
+*.pyc
+supabase/.temp/

@@ -1,18 +1,28 @@
 import pg from "pg";
 
-function createPool() {
+let database: pg.Pool | null = null;
+
+function getPool() {
   if (!process.env.SUPABASE_DB_URL) {
     throw new Error("SUPABASE_DB_URL nao configurada.");
   }
 
-  return new pg.Pool({
-    connectionString: process.env.SUPABASE_DB_URL,
-    ssl: { rejectUnauthorized: false },
-    max: 1,
-    idleTimeoutMillis: 100,
-    connectionTimeoutMillis: 10000,
-    allowExitOnIdle: true
-  });
+  if (!database) {
+    database = new pg.Pool({
+      connectionString: process.env.SUPABASE_DB_URL,
+      ssl: { rejectUnauthorized: false },
+      max: 1,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 10000,
+      allowExitOnIdle: true
+    });
+
+    database.on("error", () => {
+      database = null;
+    });
+  }
+
+  return database;
 }
 
 function isConnectionLimitError(error: unknown) {
@@ -49,38 +59,13 @@ export const pool = {
     params?: any[]
   ): Promise<pg.QueryResult<T>> {
     return retryConnectionLimit(async () => {
-      const database = createPool();
-      try {
-        return await database.query<T>(text as any, params as any);
-      } finally {
-        await database.end().catch(() => undefined);
-      }
+      return getPool().query<T>(text as any, params as any);
     });
   },
 
   async connect(): Promise<pg.PoolClient> {
     return retryConnectionLimit(async () => {
-      const database = createPool();
-      let client: pg.PoolClient;
-
-      try {
-        client = await database.connect();
-      } catch (error) {
-        await database.end().catch(() => undefined);
-        throw error;
-      }
-
-      const release = client.release.bind(client);
-      let released = false;
-
-      client.release = ((error?: Error | boolean) => {
-        if (released) return;
-        released = true;
-        release(error as any);
-        void database.end().catch(() => undefined);
-      }) as typeof client.release;
-
-      return client;
+      return getPool().connect();
     });
   }
 };
@@ -100,13 +85,20 @@ export function mapSeller(row: any) {
 }
 
 export function mapClient(row: any) {
+  const attributionMetadata = row.attribution_metadata ?? {};
+  const videoUrls = Array.isArray(attributionMetadata.athleteVideoUrls)
+    ? attributionMetadata.athleteVideoUrls.filter((item: unknown) => typeof item === "string" && item.trim()).slice(0, 8)
+    : [];
+
   return {
     id: row.id,
+    botInstanceId: row.bot_instance_id ?? "main",
     phone: row.phone,
     name: row.name,
     status: row.status,
     region: row.region,
     serviceInterest: row.service_interest ?? "nao_definido",
+    campaignKey: row.campaign_key ?? undefined,
     source: row.source ?? "whatsapp",
     assignedSellerId: row.assigned_seller_id,
     botPaused: row.bot_paused,
@@ -126,7 +118,15 @@ export function mapClient(row: any) {
     utmTerm: row.utm_term ?? null,
     fbclid: row.fbclid ?? null,
     gclid: row.gclid ?? null,
-    attributionMetadata: row.attribution_metadata ?? {},
+    attributionMetadata,
+    athleteName: attributionMetadata.athleteName ?? null,
+    athleteVideoUrls: videoUrls,
+    meetingStartsAt: row.meeting_starts_at ?? null,
+    meetingEndsAt: row.meeting_ends_at ?? null,
+    meetingSellerName: row.meeting_seller_name ?? null,
+    meetingMeetUrl: row.meeting_meet_url ?? null,
+    adhesionConfirmedAt: attributionMetadata.adhesionConfirmedAt ?? null,
+    archivedAt: attributionMetadata.archivedAt ?? null,
     lastMessageAt: row.last_message_at,
     createdAt: row.created_at
   };

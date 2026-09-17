@@ -1,5 +1,4 @@
 import path from "node:path";
-import {isNewCampaignLead} from './campaign-access.js';
 import fs from "node:fs/promises";
 import http from "node:http";
 import {AsyncLocalStorage} from 'node:async_hooks';
@@ -23,10 +22,10 @@ import {
 import {answerEc10SdrQuestion} from './ai.js';
 import {SDR_VERSION, decideEc10Sdr, sdrServiceMenu, sdrOffer, eligibleSdrOffers, explicitSdrHuman, explicitSdrStop, sdrGreeting, type SdrStep} from './sdr-flow.js';
 import { config, hasDirectDatabaseConfig, hasServerSupabaseConfig } from "./config.js";
-import { GUSTAVO_VERSION, isGustavoEnabled, queueGustavoInbound, processGustavoBatch } from './gustavo-sdr.js';
+import { exactLearningReply, conversationRole, singleQuestionReply } from './ec10-learning.mjs';
 import { sendMetaQualityEvent } from "./meta.js";
 import { normalizePollVote, pollParentId, pollVoteMessageId, readWhatsAppPollVotes, serializeWhatsAppKey } from './poll-votes.js';
-import {parseBookingContactName} from './booking-contact.js';
+import {parseBookingContactName,selectBookingContactName} from './booking-contact.js';
 import {
   buildMeetingConfirmationMessage,
   buildMeetingDateOptions,
@@ -83,8 +82,8 @@ import {
   fetchBookedEc10MeetingStarts,
   fetchFutureEc10MeetingSellerCounts,
   fetchPendingCareerMeetingGroupStates,
-  fetchDueGustavoStates,
   fetchRecentClientMessages,
+  fetchEc10LearningBase,
   hasClientOutboundMessages,
   downloadWhatsappMedia,
   findMatchingRule,
@@ -122,7 +121,7 @@ import {
 const { Client, LocalAuth, MessageMedia, Poll } = pkg;
 const projectRoot = path.resolve(import.meta.dirname, "../../..");
 const conversationLocks = new Map<string, Promise<void>>();
-const sdrOutboundContext=new AsyncLocalStorage<{clientId:string;turn:string;maxOutbound:number}>();
+const sdrOutboundContext=new AsyncLocalStorage<{clientId:string;turn:string;maxOutbound:number;learning?:{stage:string;age:number|null;role:string;message:string|null};learningUsed?:boolean}>();
 function botPhoneAliases(value:string|null|undefined) {
   const phone=normalizePhone(value||'',config.BOT_DEFAULT_COUNTRY_CODE);
   const aliases=new Set(phone?[phone]:[]);
@@ -138,13 +137,20 @@ const botTestAllowedPhones=new Set(config.BOT_TEST_ALLOWED_PHONES.split(',').fla
 function isBotTestPhoneAllowed(phone:string|null|undefined) {
   return botTestAllowedPhones.size===0||[...botPhoneAliases(phone)].some(alias=>botTestAllowedPhones.has(alias));
 }
-async function withSdrCustomerTurn<T>(clientId:string,work:()=>Promise<T>) {
+async function withSdrCustomerTurn<T>(clientId:string,phone:string,work:()=>Promise<T>) {
   const history=await fetchRecentClientMessages(clientId,24);
   const incoming=history.filter(m=>m.direction==='inbound');
   const turn=incoming.at(-1)?.createdAt;
   const recentIncoming=incoming.filter(m=>Date.parse(m.createdAt)>Date.now()-config.WHATSAPP_RATE_LIMIT_WINDOW_MINUTES*60_000).length;
   if(!turn)return work();
-  return sdrOutboundContext.run({clientId,turn,maxOutbound:Math.max(config.WHATSAPP_MAX_OUTBOUND_PER_CONTACT_WINDOW,8+recentIncoming*3)},work);
+  const state = await getBotConversationState(phone);
+  const metadata = asMetadataRecord(state?.metadata);
+  const discovery = state?.stage === 'awaiting_age' && metadata.andersonDiscoveryStep !== 'awaiting_age_natural';
+  const message = incoming.at(-1)?.body || null;
+  const learning = {stage:discovery?'discovery':state?.stage==='awaiting_age'?'awaiting_age':state?.stage==='awaiting_interest'?'diagnosing':state?.stage || 'discovery',
+    age:state?.athlete_age || extractAthleteAge(message) || null,
+    role:conversationRole(message,inferAndersonSpeakerRole(message) || state?.role_answer || 'outro',history),message};
+  return sdrOutboundContext.run({clientId,turn,learning,maxOutbound:Math.max(config.WHATSAPP_MAX_OUTBOUND_PER_CONTACT_WINDOW,8+recentIncoming*3)},work);
 }
 const outboundSendLocks = new Map<string, Promise<void>>();
 const careerMeetingGroupLocks = new Map<string, Promise<CareerMeetingGroupResult>>();
@@ -198,8 +204,8 @@ const revelaCampaignAutomationEnabled = process.env.REVELA_CAMPAIGN_AUTOMATION_E
 const revelaCampaignPollQuestion = "Ainda restou alguma d\u00favida ou voc\u00ea quer conhecer melhor a plataforma?";
 const revelaCampaignPollOptions = ["Fiquei com d\u00favida", "Quero conhecer melhor"];
 const igorContactMessage = [
-  `Perfeito. Para tirar sua d\u00favida e te orientar melhor, fale direto com ${config.EC10_SELLER_NAME}:`,
-  `https://wa.me/${config.EC10_SELLER_PHONE.replace(/\D/g, "")}`
+  "Perfeito. Para tirar sua d\u00favida e te orientar melhor, fale direto com nosso vendedor Igor Jardins:",
+  "https://wa.me/553182331411"
 ].join("\n");
 const ec10MeetingScheduledTag = "ec10_reuniao_agendada";
 const ec10GoogleMeetUrl = config.EC10_GOOGLE_MEET_URL?.trim() || null;
@@ -1742,9 +1748,9 @@ async function shouldSendBotOutbound(input: {
   windowMinutes?: number;
 }) {
   if(botTestAllowedPhones.size) {
-    const stored=await getClientAutomationStateById(input.clientId);
+    const stored=input.phone?null:await getClientAutomationStateById(input.clientId);
     const phone=input.phone||stored?.phone||null;
-    if(!isBotTestPhoneAllowed(phone) && !isNewCampaignLead(stored)) {
+    if(!isBotTestPhoneAllowed(phone)) {
       await recordTrafficEvent({clientId:input.clientId,phone,eventType:'bot_test_isolation_suppressed',channel:'whatsapp',platform:'whatsapp',metadata:{direction:'outbound'}});
       return false;
     }
@@ -1839,13 +1845,16 @@ async function shouldSendBotOutbound(input: {
     return false;
   }
 
+  // Repeating the next-action menu after a NEW customer message is intentional.
+  // The turn-scoped lock above still suppresses duplicate handling of that same message.
+  if(sdrTurn&&input.mediaType!=='audio')return true;
+
   const duplicate = await hasRecentOutboundChatMessage({
     clientId: input.clientId,
     body: input.body ?? null,
     mediaType: input.mediaType,
     mediaPath: input.mediaPath ?? null,
-    windowMinutes,
-    after:sdrTurn?.turn
+    windowMinutes
   });
 
   const fallbackTextDuplicate = input.mediaType === "poll"
@@ -1854,8 +1863,7 @@ async function shouldSendBotOutbound(input: {
         body: input.body ?? null,
         mediaType: "text",
         mediaPath: null,
-        windowMinutes,
-        after:sdrTurn?.turn
+        windowMinutes
       })
     : false;
 
@@ -1992,6 +2000,20 @@ function nextPendingAckRetryAt(attempts: number) {
 }
 
 async function sendBotText(client: any, chatId: string, clientId: string, body: string, delayRange?: [number, number]) {
+  const turn = sdrOutboundContext.getStore();
+  if (turn?.clientId === clientId && turn.learning && !turn.learningUsed
+    && ['discovery','awaiting_age','diagnosing','awaiting_guardian_confirmation'].includes(turn.learning.stage)
+    && !explicitSdrStop(turn.learning.message) && !explicitSdrHuman(turn.learning.message)
+    && body !== 'Bem-vindo à EC10 Talentos!') {
+    turn.learningUsed = true;
+    try {
+      const learned = exactLearningReply(await fetchEc10LearningBase(), turn.learning);
+      if (learned) body = learned.reply;
+    } catch { console.warn('EC10 learning unavailable; preserving approved flow'); }
+  }
+  if (turn?.clientId === clientId && turn.learning && body !== 'Bem-vindo à EC10 Talentos!') {
+    body = singleQuestionReply(body,{...turn.learning});
+  }
   return withOutboundSendLock(buildOutboundSendLockKey({ clientId, body, mediaType: "text" }), async () => {
     const pauseReason = await getImmediateOutboundPauseReason();
     if (pauseReason) {
@@ -2994,7 +3016,7 @@ async function askMeetingDate(client: any, chatId: string, clientId: string, pho
     : previous?.service_interest === "eurocamp" ? "eurocamp" : "plano_carreira";
   const minor=!!previous?.athlete_age&&previous.athlete_age<18;
   const knownRole=previous?.role_answer==='responsavel';
-  const contactName=parseBookingContactName(String(previous?.metadata?.bookingContactName||((knownRole||!minor)&&previous?.metadata?.leadName)||''));
+  const contactName=selectBookingContactName({metadata:previous?.metadata,minor,responsibleRole:knownRole});
   if(!contactName) {
     await persistEc10State({clientId,phone,previous,stage:'awaiting_interest',completedAt:null,
       metadata:{bookingContactPending:true,audioSequenceInProgress:false}});
@@ -3374,7 +3396,7 @@ function automationSuppressionReason(clientState: ClientAutomationState) {
 
 function shouldRunWhatsAppAutomation(clientState: ClientAutomationState) {
   if (clientState.bot_instance_id !== config.BOT_INSTANCE_ID) return false;
-  if (!isBotTestPhoneAllowed(clientState.phone) && !isNewCampaignLead(clientState)) return false;
+  if (!isBotTestPhoneAllowed(clientState.phone)) return false;
   if (config.BOT_AI_MODE === "primary") return true;
   return hasTrafficSignal(clientState) || isDirectCareerWhatsAppEntry(clientState);
 }
@@ -3400,15 +3422,11 @@ async function recordAutomationSuppressed(clientState: ClientAutomationState, co
 async function evaluateQueuedOutboundPermission(item: {
   client_id: string;
   bot_instance_id: string;
-  media_path?: string | null;
 }) {
   const clientState = await getClientAutomationStateById(item.client_id);
   if (!clientState) return { allowed: false, reason: "client_not_found", clientState: null };
   if (clientState.bot_instance_id !== item.bot_instance_id) {
     return { allowed: false, reason: "queue_client_bot_instance_mismatch", clientState };
-  }
-  if (isGustavoEnabled() && item.media_path?.startsWith('ec10_followup:')) {
-    return { allowed: false, reason: 'anderson_isolated_by_gustavo', clientState };
   }
   if (!shouldRunWhatsAppAutomation(clientState)) {
     return { allowed: false, reason: automationSuppressionReason(clientState), clientState };
@@ -3475,7 +3493,7 @@ async function sendIgorAccess(client: any, chatId: string, clientId: string) {
     eventType: "campaign_revela_igor_sent",
     channel: "whatsapp",
     platform: "whatsapp",
-    metadata: { seller: config.EC10_SELLER_NAME, contact: config.EC10_SELLER_PHONE.replace(/\D/g, "") }
+    metadata: { seller: "Igor Jardins", contact: "553182331411" }
   });
 }
 
@@ -3760,7 +3778,7 @@ async function handleEc10AiConversation(
   }
   if(existingFlowState?.stage==='completed') {
     if(isRestartCommand(body))return handleEc10Conversation(client,chatId,clientState.id,clientState.phone,body,mediaType);
-    if(explicitSdrHuman(body)||explicitSdrStop(body))return withSdrCustomerTurn(clientState.id,()=>handleEc10SdrTurn(client,chatId,clientState.id,clientState.phone,{...existingFlowState,metadata:{...existingFlowState.metadata,sdrStep:'next'}},body));
+    if(explicitSdrHuman(body)||explicitSdrStop(body))return withSdrCustomerTurn(clientState.id,clientState.phone,()=>handleEc10SdrTurn(client,chatId,clientState.id,clientState.phone,{...existingFlowState,metadata:{...existingFlowState.metadata,sdrStep:'next'}},body));
     const age=existingFlowState.athlete_age;
     if(age) {
       const offer=sdrOffer(age,existingFlowState.metadata.sdrOfferId)??eligibleSdrOffers(age).find(o=>o.service===existingFlowState.service_interest)??null;
@@ -3839,6 +3857,8 @@ async function handleEc10AiConversation(
   const history = await fetchRecentClientMessages(clientState.id, 14);
   const leadMetadata=asMetadataRecord(existingFlowState?.metadata);
   const aiReply = await generateEc10SalesReplyWithAi({
+    athleteAge: existingFlowState?.athlete_age || clientState.athlete_age || null,
+    learningStage: existingFlowState?.stage === 'awaiting_guardian_confirmation' ? 'awaiting_guardian_confirmation' : 'diagnosing',
     message: body,
     mediaType,
     history,
@@ -3895,6 +3915,13 @@ async function handleEc10AiConversation(
     return true;
   }
 
+  if(existingFlowState&&(aiReply.responsibleName||aiReply.athleteName)) {
+    await persistEc10State({clientId:clientState.id,phone:clientState.phone,previous:existingFlowState,
+      stage:existingFlowState.stage,metadata:{
+        ...(aiReply.responsibleName?{responsibleName:aiReply.responsibleName}:{}),
+        ...(aiReply.athleteName?{athleteName:aiReply.athleteName}:{})
+      }});
+  }
   await sendBotText(client, chatId, clientState.id, aiReply.reply, [900, 1900]);
   const qualifiesForMeeting = isAiLeadQualifiedForMeeting(aiReply);
   const ericAudioPath = qualifiesForMeeting || clientState.athlete_age
@@ -3905,6 +3932,8 @@ async function handleEc10AiConversation(
     : false;
   await updateClientAiProfile({
     clientId: clientState.id,
+    responsibleName: aiReply.responsibleName,
+    athleteName: aiReply.athleteName,
     serviceInterest: aiReply.serviceInterest,
     athleteAge: aiReply.athleteAge,
     leadTemperature: aiReply.leadTemperature,
@@ -3943,7 +3972,9 @@ async function handleEc10AiConversation(
         source: "groq_ai_sdr",
         flowVersion: "eric_2026_09_14",
         ageQuestionAskedAt: new Date().toISOString(),
-        structuredAgeCaptureStarted: true
+        structuredAgeCaptureStarted: true,
+        ...(aiReply.responsibleName?{responsibleName:aiReply.responsibleName}:{}),
+        ...(aiReply.athleteName?{athleteName:aiReply.athleteName}:{})
       }
     });
   }
@@ -4012,6 +4043,8 @@ async function handleEc10AiConversation(
         aiQualifiedAt: new Date().toISOString(),
         qualificationReason: aiReply.qualificationReason,
         guardianConfirmed: aiReply.guardianConfirmed,
+        ...(aiReply.responsibleName?{responsibleName:aiReply.responsibleName}:{}),
+        ...(aiReply.athleteName?{athleteName:aiReply.athleteName}:{}),
       },
     });
     await appendClientTags(clientState.id, ["ia_qualificado", "ia_agendamento_iniciado"]);
@@ -4037,6 +4070,7 @@ function andersonPlainText(value:string|null|undefined) {
 
 function inferAndersonSpeakerRole(value:string|null|undefined) : 'atleta'|'responsavel'|null {
   const text=andersonPlainText(value);
+  if(/\b((pra|para|por) mim( mesmo| mesma)?|sou eu|eu mesmo|eu mesma)\b/.test(text))return 'atleta';
   if(/\b(sou|eu sou|falo como|o atleta sou eu|atleta)\b/.test(text)&&!/\b(meu|minha|filho|filha|sobrinho|sobrinha|responsavel|pai|mae)\b/.test(text))return 'atleta';
   if(/\b(responsavel|pai|mae|meu filho|minha filha|meu atleta|sou a mae|sou o pai)\b/.test(text))return 'responsavel';
   return null;
@@ -4058,7 +4092,7 @@ function andersonFirstName(state:BotConversationState) {
 function andersonNaturalGreeting(body:string|null,firstName:string) {
   const text=andersonPlainText(body);
   const greeting=/boa tarde/.test(text)?'Boa tarde':/boa noite/.test(text)?'Boa noite':/bom dia/.test(text)?'Bom dia':'Oi';
-  return `${greeting}${firstName?`, ${firstName}`:''}! Tudo certo por aqui 😄 E com você? Me conta, o que te trouxe até a EC10?`;
+  return `${greeting}${firstName?`, ${firstName}`:''}! Tudo certo por aqui 😄 Me conta, o que te trouxe até a EC10?`;
 }
 
 async function handleAndersonNaturalDiscoveryBeforeAge(input:{client:any;chatId:string;clientId:string;phone:string;state:BotConversationState;body:string|null}) {
@@ -4203,7 +4237,7 @@ async function handleEc10SdrTurn(client:any,chatId:string,clientId:string,phone:
 async function handleEc10Conversation(client: any, chatId: string, clientId: string, phone: string, body: string | null, mediaType = "text"):Promise<boolean> {
   const state=await getBotConversationState(phone);
   if(!state||state.stage==='awaiting_age'||state.metadata?.sdrVersion===SDR_VERSION) {
-    return withSdrCustomerTurn(clientId,()=>handleEc10ConversationInternal(client,chatId,clientId,phone,body,mediaType));
+    return withSdrCustomerTurn(clientId,phone,()=>handleEc10ConversationInternal(client,chatId,clientId,phone,body,mediaType));
   }
   return handleEc10ConversationInternal(client,chatId,clientId,phone,body,mediaType);
 }
@@ -4218,7 +4252,8 @@ async function handleEc10ConversationInternal(client: any, chatId: string, clien
     return true;
   }
   if(greeting&&currentState?.metadata?.bookingContactPending===true) {
-    await sendBotText(client,chatId,clientId,`${greeting} Para abrir sua agenda, qual é o nome completo de quem participará da reunião?`,[500,1000]);
+    const participant=currentState.athlete_age&&currentState.athlete_age<18?'do responsável que participará':'de quem participará';
+    await sendBotText(client,chatId,clientId,`${greeting} Para abrir sua agenda, qual é o nome completo ${participant} da reunião?`,[500,1000]);
     return true;
   }
 
@@ -4324,16 +4359,19 @@ async function handleEc10ConversationInternal(client: any, chatId: string, clien
     if(currentState.metadata?.sdrVersion===SDR_VERSION&&/\?|\b(como|quanto|valor|pre[cç]o|investimento|funciona|inclui|garantia|d[uú]vida)\b/i.test(body||'')) {
       const age=currentState.athlete_age||8;
       const answer=await answerEc10SdrQuestion({age,offer:sdrOffer(age,currentState.metadata.sdrOfferId),step:'booking',message:body});
-      await sendBotText(client,chatId,clientId,`${answer}\n\nPara continuar com a agenda, me envie o nome completo de quem participará da reunião.`,[500,1000]);
+      const participant=currentState.athlete_age&&currentState.athlete_age<18?'do responsável que participará':'de quem participará';
+      await sendBotText(client,chatId,clientId,`${answer}\n\nPara continuar com a agenda, me envie o nome completo ${participant} da reunião.`,[500,1000]);
       return true;
     }
     const contactName=parseBookingContactName(body);
     if(!contactName) {
-      await sendBotText(client,chatId,clientId,'Me envie o nome completo de quem participará da reunião, por exemplo: Maria Oliveira. Se preferir atendimento humano, escreva “atendente”.');
+      const participant=currentState.athlete_age&&currentState.athlete_age<18?'do responsável que participará':'de quem participará';
+      await sendBotText(client,chatId,clientId,`Me envie o nome completo ${participant} da reunião, por exemplo: Maria Oliveira. Se preferir atendimento humano, escreva “atendente”.`);
       return true;
     }
     const next=await persistEc10State({clientId,phone,previous:currentState,stage:'awaiting_interest',
-      metadata:{bookingContactName:contactName,bookingContactPending:false}});
+      metadata:{bookingContactName:contactName,
+        ...(currentState.athlete_age&&currentState.athlete_age<18?{responsibleName:contactName}:{}),bookingContactPending:false}});
     await askMeetingDate(client,chatId,clientId,phone,next);
     return true;
   }
@@ -5319,8 +5357,7 @@ async function writeStatus(status: string, details: Record<string, unknown> = {}
     botInstanceLabel: config.BOT_INSTANCE_LABEL,
     databaseSchema: config.BOT_DB_SCHEMA,
     aiEnabled: config.BOT_AI_ENABLED === "true",
-    sdrVersion:isGustavoEnabled() ? GUSTAVO_VERSION : SDR_VERSION,
-    sdrEngine:config.EC10_SDR_ENGINE,
+    sdrVersion:SDR_VERSION,
     aiMode: config.BOT_AI_MODE,
     aiAudioEnabled: config.BOT_AI_AUDIO_ENABLED === "true",
     aiProvider: config.BOT_AI_PROVIDER,
@@ -5778,11 +5815,6 @@ async function main() {
           channel:'whatsapp',platform:'whatsapp',metadata:{selectedOptions,source,pollMessageId:normalized.parentId}});
         const chatId = serializeWhatsAppKey(vote.parentMessage?.to) || normalized.voter;
 
-        if (isGustavoEnabled()) {
-          await queueGustavoInbound(activeClientState, chatId, selectedBody);
-          return;
-        }
-
         if (config.BOT_AI_MODE === "primary") {
           const schedulingState = await getBotConversationState(activeClientState.phone);
           if (schedulingState && schedulingState.stage !== "completed") {
@@ -5859,11 +5891,6 @@ async function main() {
 
           if (clientState.bot_paused) return;
 
-          if (isGustavoEnabled()) {
-            await queueGustavoInbound(clientState, message.from, messageBody);
-            return;
-          }
-
           if(config.BOT_AI_MODE!=='primary'&&shouldSendEc10Welcome(await hasClientOutboundMessages(clientState.id),messageBody)) {
             const welcomed=await sendBotText(client,message.from,clientState.id,ec10Messages.welcome,[700,1400]);
             if(!welcomed)return;
@@ -5910,25 +5937,6 @@ async function main() {
   });
 
   await client.initialize();
-
-  let processingGustavo = false;
-  setInterval(async () => {
-    if (!isGustavoEnabled() || processingGustavo || !isCurrentWhatsAppClient(client) || !whatsappReady || currentBotStatus !== 'ready') return;
-    processingGustavo = true;
-    try {
-      for (const state of await fetchDueGustavoStates(5)) {
-        const lead = await getClientAutomationStateById(state.client_id);
-        if (!lead || !shouldRunWhatsAppAutomation(lead) || lead.bot_paused) continue;
-        await withConversationLock(lead.phone, async () => {
-          await withSdrCustomerTurn(lead.id, () => processGustavoBatch(
-            state,
-            (chatId, clientId, body) => sendBotText(client, chatId, clientId, body, [700,1400])
-          ));
-        });
-      }
-    } catch (error) { console.warn('Gustavo batch scheduler unavailable', error instanceof Error ? error.message : 'integration_failed'); }
-    finally { processingGustavo = false; }
-  }, 3000);
 
   setInterval(async () => {
     if (processingPollRecovery || !isCurrentWhatsAppClient(client) || !whatsappReady || currentBotStatus!=='ready' || !isWhatsAppConnected()) return;

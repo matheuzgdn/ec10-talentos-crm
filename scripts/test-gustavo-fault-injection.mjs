@@ -63,8 +63,15 @@ for (const item of cases) {
 }
 
 const indexSource = fs.readFileSync("apps/bot/src/index.ts", "utf8");
-assert.match(indexSource, /withSdrCustomerTurn\(lead\.id[\s\S]{0,180}processGustavoBatch/);
-assert.match(indexSource, /after:sdrTurn\?\.turn/);
+assert.match(
+  indexSource,
+  /withSdrCustomerTurn\(clientState\.id,clientState\.phone,\(\)=>handleEc10SdrTurn/,
+);
+assert.match(
+  indexSource,
+  /withSdrCustomerTurn\(clientId,phone,\(\)=>handleEc10ConversationInternal/,
+);
+assert.match(indexSource, /:sdr_turn:\$\{sdrTurn\.turn\}/);
 
 console.log(JSON.stringify({
   passed: results.length + 22,

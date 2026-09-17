@@ -48,8 +48,6 @@ const schema = z.object({
   BOT_OUTBOUND_ALLOWED_PREFIXES: z.string().default(""),
   BOT_TEST_ALLOWED_PHONES: z.string().default(""),
   BOT_AI_ENABLED: z.string().default("true"),
-  EC10_SDR_ENGINE: z.enum(["anderson", "gustavo"]).default("anderson"),
-  GUSTAVO_SKILL_DIR: z.string().default("./skill/gustavo"),
   BOT_AI_MODE: z.enum(["fallback", "primary"]).default("fallback"),
   BOT_AI_AUDIO_ENABLED: z.string().default("false"),
   BOT_AI_FALLBACK_ENABLED: z.string().default("true"),
@@ -79,8 +77,8 @@ const schema = z.object({
   GEMINI_AUDIO_MODEL: z.string().default("gemini-2.5-flash-lite"),
   GEMINI_MAX_AUDIO_BYTES: z.coerce.number().default(8_000_000),
   EC10_GOOGLE_MEET_URL: z.string().optional(),
-  EC10_SELLER_NAME: z.string().default("EC10 Comercial"),
-  EC10_SELLER_PHONE: z.string().default("+55 31 9852-6146"),
+  EC10_SELLER_NAME: z.string().default("Igor Jardins"),
+  EC10_SELLER_PHONE: z.string().default("+55 31 8233-1411"),
   EC10_INTERNATIONAL_SELLER_NAME: z.string().optional(),
   EC10_INTERNATIONAL_SELLER_PHONE: z.string().optional(),
   EC10_CAREER_SELLER_NAME: z.string().optional(),
@@ -116,8 +114,8 @@ export const config = {
   ),
   EC10_INTERNATIONAL_SELLER_NAME: parsedConfig.EC10_INTERNATIONAL_SELLER_NAME || parsedConfig.EC10_SELLER_NAME,
   EC10_INTERNATIONAL_SELLER_PHONE: parsedConfig.EC10_INTERNATIONAL_SELLER_PHONE || parsedConfig.EC10_SELLER_PHONE,
-  EC10_CAREER_SELLER_NAME: parsedConfig.EC10_CAREER_SELLER_NAME || "EC10 Comercial",
-  EC10_CAREER_SELLER_PHONE: parsedConfig.EC10_CAREER_SELLER_PHONE || "+55 31 9852-6146"
+  EC10_CAREER_SELLER_NAME: parsedConfig.EC10_CAREER_SELLER_NAME || "Sandro",
+  EC10_CAREER_SELLER_PHONE: parsedConfig.EC10_CAREER_SELLER_PHONE || "+55 31 8876-4692"
 };
 
 export const mainBotInstanceId = "main";

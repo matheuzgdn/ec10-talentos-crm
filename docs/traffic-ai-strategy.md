@@ -55,9 +55,19 @@ Prioridade de remarketing:
 4. Quem perdeu por tempo, preco ou falta de resposta.
 5. Visitantes/leads por idade e servico quando o Meta sync estiver alimentado.
 
-## IA Base44
+## IA local com Ollama
 
-A API da Base44 e chamada pela rota `/api/traffic?action=recommendations` quando as variaveis abaixo existem no ambiente:
+O Trafego IA usa Ollama local quando `TRAFFIC_AI_PROVIDER=ollama`. O modelo recomendado neste PC e:
+
+- `TRAFFIC_OLLAMA_MODEL=qwen3.5:4b`
+- `TRAFFIC_OLLAMA_NUM_CTX=4096`
+- `TRAFFIC_OLLAMA_MAX_OUTPUT_TOKENS=1200`
+
+A rota `/api/traffic?action=recommendations` tenta gerar recomendacoes com Ollama e, se a resposta falhar ou vier fora do formato esperado, volta para a heuristica local para nao parar a operacao.
+
+## IA Base44 opcional
+
+A API da Base44 pode ser chamada pela rota `/api/traffic?action=recommendations` quando `TRAFFIC_AI_PROVIDER=base44` e as variaveis abaixo existem no ambiente:
 
 - `BASE44_TRAFFIC_AGENT_URL`
 - `BASE44_TRAFFIC_AGENT_API_KEY`
@@ -79,6 +89,37 @@ Variaveis necessarias:
 A sincronizacao e somente leitura. O sistema ainda nao publica campanhas nem altera orcamento automaticamente.
 
 Quando o vendedor muda um lead para `triagem`, `orcamento`, `quente` ou `fechado`, o CRM tenta enviar um evento de qualidade para a Conversions API usando `META_PIXEL_ID` e `META_CAPI_ACCESS_TOKEN`. Se a Meta recusar, o CRM nao bloqueia a venda; o erro fica apenas no log da API.
+
+### Pre-flight EC10 antes de investir
+
+- BM recomendado: `ec10_talentos`.
+- Conta recomendada: `Conta 01 - EC10`.
+- Pixel/dataset recomendado: `EC10 Pixel Lead Page`.
+- Dominio principal para trafego: `https://ec10talentos.com`.
+- Nao usar pixels duplicados/inativos para novas campanhas.
+- Nao usar publicos salvos antigos sem revisao, pois havia alertas de segmentacao detalhada descontinuada.
+- Resolver antes de ativar campanha: pagamento/fundos, limite de gasto, verificacao do negocio, dominio do BM, seguranca do portfolio e token Meta expirado.
+
+### Padrao tecnico de sinais
+
+O Oraculo envia sinais para a Meta com foco em qualidade, nao apenas volume:
+
+- `Lead`: cadastro vindo da landing ou lead em triagem.
+- `QualifiedLead`: lead marcado como quente no CRM.
+- `Schedule`: lead em orcamento/agendamento.
+- `Purchase`: lead fechado.
+- `DisqualifiedLead`: lead perdido, para analise e exclusao futura.
+
+Os eventos usam `event_id` deterministico por lead/status, telefone com hash quando existir, `external_id` com hash do cliente, `fbclid`/`fbc`/`fbp` quando a landing enviar e `event_source_url` do dominio `ec10talentos.com`.
+
+### Padrao de campanhas novas
+
+- Criar rascunhos sempre pausados.
+- Usar publico amplo com idade/regiao necessaria e Advantage+ Audience ligado.
+- Evitar fragmentar por muitos interesses ou paises na fase inicial.
+- Otimizar primeiro para `Lead` no Pixel da EC10 e migrar para `QualifiedLead` quando houver volume consistente.
+- Manter UTMs obrigatorias: `utm_source=meta`, `utm_medium=paid_social`, `utm_campaign`, `utm_content`, `utm_term`.
+- Escalar somente depois de sinal estavel de lead qualificado no CRM.
 
 ## Proximos niveis
 

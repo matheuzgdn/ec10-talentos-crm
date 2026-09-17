@@ -5,8 +5,10 @@ import {
   handleApiError,
   loginCrmUser
 } from "./_auth.js";
+import meHandler from "./_me.js";
 
 export default async function handler(request: any, response: any) {
+  if (request.method === "GET" && request.query?.mode === "me") return meHandler(request, response);
   if (request.method !== "POST") {
     response.status(405).json({ error: "Method not allowed" });
     return;

@@ -12,6 +12,8 @@ Repositorio do ecossistema comercial da EC10 Talentos: painel do CRM, APIs, bot 
 - `scripts`: testes, diagnosticos, reparos e guardiao antifalhas.
 - `deploy`: unidades systemd e configuracoes de producao sem segredos.
 
+O mapa completo de repositorios, rotas e ambientes esta em [docs/EC10-ECOSYSTEM-MAP.md](docs/EC10-ECOSYSTEM-MAP.md). O site institucional e as landing pages ficam no repositorio [ec10-manager](https://github.com/matheuzgdn/ec10-manager).
+
 ## Regra de seguranca
 
 Este repositorio nao contem chaves de API, senhas, banco, sessoes do WhatsApp, QR Codes, dados de leads ou chave SSH. Esses itens ficam somente nos ambientes autorizados. Nunca envie `.env`, `whatsapp-session`, `runtime`, backups ou inventarios privados ao GitHub.
@@ -68,3 +70,4 @@ Os testes nao devem enviar mensagens reais. Alteracoes em fluxo, memoria, qualif
 
 O GitHub e a fonte versionada. O servidor Oracle usa credenciais externas ao repositorio e deve receber somente codigo revisado. Veja [OPERACAO-PRODUCAO.md](docs/OPERACAO-PRODUCAO.md) e [CONTRIBUTING.md](CONTRIBUTING.md).
 
+As configuracoes reais de Supabase, Gemini/Groq, Meta, Google e Oracle ficam nos ambientes de producao. Um programador novo deve receber acesso individual aos provedores; nunca copie `.env`, token, sessao do WhatsApp ou chave SSH pelo GitHub.

@@ -1,20 +1,33 @@
-import { FormEvent, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
+  Activity,
   AlertTriangle,
   BarChart3,
+  CalendarDays,
+  ChevronLeft,
+  ChevronRight,
   CheckCircle2,
+  Clock3,
   Download,
   Flame,
+  Gauge,
+  Link2,
   Megaphone,
+  MousePointerClick,
+  PieChart as PieChartIcon,
+  Radio,
   RefreshCw,
   Rocket,
   Send,
   Sparkles,
   Target,
   TrendingUp,
-  UsersRound
+  UserCheck,
+  UsersRound,
+  X
 } from "lucide-react";
 import type { ServiceInterest } from "@crm/shared";
+import { BhPrimeManager } from "./BhPrimeManager";
 
 type TrafficMetrics = {
   totalLeads: number;
@@ -91,6 +104,70 @@ type TrafficSnapshot = {
   purchases: number | null;
 };
 
+type TrafficDailyPoint = {
+  date: string;
+  spend: string | number | null;
+  impressions: number | null;
+  clicks: number | null;
+  leads: number | null;
+  qualifiedLeads: number | null;
+  proposals: number | null;
+  purchases: number | null;
+  ctr: string | number | null;
+  cpc: string | number | null;
+};
+
+type TrafficAdPerformance = {
+  campaignId: string | null;
+  campaignName: string | null;
+  adsetId: string | null;
+  adsetName: string | null;
+  adId: string | null;
+  adName: string | null;
+  status: string | null;
+  spend: string | number | null;
+  impressions: number | null;
+  clicks: number | null;
+  leads: number | null;
+  qualifiedLeads: number | null;
+  purchases: number | null;
+  ctr: string | number | null;
+  cpc: string | number | null;
+  lastSyncedAt: string | null;
+};
+
+type TrafficMeeting = {
+  clientId: string;
+  clientName: string | null;
+  phone: string | null;
+  status: string | null;
+  serviceInterest: ServiceInterest | string | null;
+  sellerId: string | null;
+  sellerName: string | null;
+  sellerRoute: string | null;
+  startsAt: string;
+  endsAt: string | null;
+  meetUrl: string | null;
+  sellerNotified: boolean;
+  updatedAt: string | null;
+};
+
+type TrafficAttributionHealth = {
+  siteLeads: number;
+  attributedLeads: number;
+  fbpLeads: number;
+  fbcLeads: number;
+  fbclidLeads: number;
+  closedClients: number;
+  closedWithAttribution: number;
+  qualifiedEvents: number;
+  scheduleEvents: number;
+  purchaseEvents: number;
+  meetingEvents: number;
+  attributionRate: number;
+  purchaseSignalGap: number;
+};
+
 type MetaStatusCheck = {
   name: string;
   ok: boolean;
@@ -121,6 +198,10 @@ type TrafficOverview = {
   recommendations: TrafficRecommendation[];
   drafts: TrafficCampaignDraft[];
   snapshots: TrafficSnapshot[];
+  adPerformance: TrafficAdPerformance[];
+  dailySeries: TrafficDailyPoint[];
+  meetings: TrafficMeeting[];
+  attributionHealth: TrafficAttributionHealth;
 };
 
 const emptyOverview: TrafficOverview = {
@@ -143,7 +224,25 @@ const emptyOverview: TrafficOverview = {
   recentEvents: [],
   recommendations: [],
   drafts: [],
-  snapshots: []
+  snapshots: [],
+  adPerformance: [],
+  dailySeries: [],
+  meetings: [],
+  attributionHealth: {
+    siteLeads: 0,
+    attributedLeads: 0,
+    fbpLeads: 0,
+    fbcLeads: 0,
+    fbclidLeads: 0,
+    closedClients: 0,
+    closedWithAttribution: 0,
+    qualifiedEvents: 0,
+    scheduleEvents: 0,
+    purchaseEvents: 0,
+    meetingEvents: 0,
+    attributionRate: 0,
+    purchaseSignalGap: 0
+  }
 };
 
 const serviceLabel: Record<string, string> = {
@@ -160,11 +259,24 @@ const eventLabel: Record<string, string> = {
   bot_age_captured: "Idade capturada",
   bot_audio_sent: "Audio enviado",
   bot_link_sent: "Pagina enviada",
+  career_plan_bot_activated: "Bot Plano de Carreira",
+  mentoria_prime_bot_activated: "Bot Mentoria Prime",
+  bot_meeting_scheduled: "Reuniao agendada",
   seller_reply_sent: "Vendedor respondeu",
   qualified_lead: "Lead quente",
   proposal_requested: "Orcamento",
   purchase: "Fechamento",
   lost_lead: "Perdido"
+};
+
+const leadStatusLabel: Record<string, string> = {
+  novo: "Novo",
+  triagem: "Triagem",
+  orcamento: "Orcamento",
+  aguardando_cliente: "Aguardando",
+  quente: "Quente",
+  fechado: "Fechado",
+  perdido: "Perdido"
 };
 
 async function apiJson<T>(path: string, options: RequestInit = {}) {
@@ -200,6 +312,66 @@ function formatDate(value: string) {
   return new Date(value).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
+function formatShortDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
+}
+
+function formatWeekday(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString("pt-BR", { weekday: "short" }).replace(".", "");
+}
+
+function formatMeetingDay(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit" }).replace(".", "");
+}
+
+function formatMeetingTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+}
+
+function dayKey(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value.slice(0, 10);
+  return date.toISOString().slice(0, 10);
+}
+
+function parseDateKey(value: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return null;
+  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+}
+
+function localDayKey(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function formatDateKeyShort(value: string) {
+  const date = parseDateKey(value);
+  if (!date) return value;
+  return date.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
+}
+
+function formatDateKeyWeekday(value: string) {
+  const date = parseDateKey(value);
+  if (!date) return "";
+  return date.toLocaleDateString("pt-BR", { weekday: "short" }).replace(".", "");
+}
+
+function monthTitle(value: string) {
+  const date = parseDateKey(value) ?? new Date();
+  return date.toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
+}
+
 function barWidth(value: number, max: number) {
   if (!max || value <= 0) return "0%";
   return `${Math.min(100, Math.max(5, (value / max) * 100))}%`;
@@ -213,6 +385,17 @@ function compactCampaignName(name: string | null) {
 function shortText(value: string, max = 64) {
   return value.length > max ? `${value.slice(0, max - 3)}...` : value;
 }
+
+function isActiveMetaStatus(status: string | null | undefined) {
+  return String(status ?? "").toUpperCase() === "ACTIVE";
+}
+
+function normalizePercent(value: number, max = 100) {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.min(max, Math.max(0, value));
+}
+
+const trafficPalette = ["#55d8ff", "#8b5cf6", "#5bffdb", "#ffd05b", "#ff47a6", "#5bff99"];
 
 export function TrafficPanel({ isAdmin }: { isAdmin: boolean }) {
   const [overview, setOverview] = useState<TrafficOverview>(emptyOverview);
@@ -228,6 +411,12 @@ export function TrafficPanel({ isAdmin }: { isAdmin: boolean }) {
   const [budgetDaily, setBudgetDaily] = useState("50");
   const [budgetTotal, setBudgetTotal] = useState("");
   const [goal, setGoal] = useState("gerar conversas qualificadas no WhatsApp");
+  const [selectedBudgetSegment, setSelectedBudgetSegment] = useState<string | null>(null);
+  const [showAgendaModal, setShowAgendaModal] = useState(false);
+  const [selectedMeetingDate, setSelectedMeetingDate] = useState<string | null>(null);
+  const [selectedSellerFilter, setSelectedSellerFilter] = useState("Todos");
+  const overviewRequestRef = useRef(0);
+  const metaStatusRequestRef = useRef(0);
 
   const eventMap = useMemo(() => {
     return Object.fromEntries(overview.eventCounts.map((item) => [item.eventType, item.total]));
@@ -314,17 +503,277 @@ export function TrafficPanel({ isAdmin }: { isAdmin: boolean }) {
       .sort((a, b) => b.spend - a.spend);
   }, [overview.snapshots]);
 
+  const activeCampaignRows = useMemo(() => {
+    const active = campaignRows.filter((campaign) => isActiveMetaStatus(campaign.status));
+    return active.length ? active : campaignRows;
+  }, [campaignRows]);
+
+  const dailySeries = useMemo(() => {
+    return overview.dailySeries.map((item) => ({
+      ...item,
+      spend: numberValue(item.spend),
+      impressions: numberValue(item.impressions),
+      clicks: numberValue(item.clicks),
+      leads: numberValue(item.leads),
+      qualifiedLeads: numberValue(item.qualifiedLeads),
+      proposals: numberValue(item.proposals),
+      purchases: numberValue(item.purchases),
+      ctr: numberValue(item.ctr),
+      cpc: numberValue(item.cpc)
+    }));
+  }, [overview.dailySeries]);
+
+  const upcomingMeetings = useMemo(() => {
+    const now = Date.now();
+    return overview.meetings
+      .filter((meeting) => new Date(meeting.startsAt).getTime() >= now - 60 * 60 * 1000)
+      .sort((a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime());
+  }, [overview.meetings]);
+
+  const meetingDays = useMemo(() => {
+    const grouped = new Map<string, TrafficMeeting[]>();
+    for (const meeting of upcomingMeetings) {
+      const key = dayKey(meeting.startsAt);
+      grouped.set(key, [...(grouped.get(key) ?? []), meeting]);
+    }
+    return Array.from(grouped.entries()).slice(0, 10).map(([date, meetings]) => ({ date, meetings }));
+  }, [upcomingMeetings]);
+
+  const sellerMeetingStats = useMemo(() => {
+    const grouped = new Map<string, { sellerName: string; total: number; career: number; international: number; ambos: number }>();
+    for (const meeting of upcomingMeetings) {
+      const sellerName = meeting.sellerName || "Sem vendedor";
+      const current = grouped.get(sellerName) ?? { sellerName, total: 0, career: 0, international: 0, ambos: 0 };
+      current.total += 1;
+      if (meeting.serviceInterest === "plano_internacional") current.international += 1;
+      else if (meeting.serviceInterest === "ambos") current.ambos += 1;
+      else current.career += 1;
+      grouped.set(sellerName, current);
+    }
+    return Array.from(grouped.values()).sort((a, b) => b.total - a.total);
+  }, [upcomingMeetings]);
+
+  const serviceMix = useMemo(() => {
+    const total = Math.max(1, overview.metrics.totalLeads);
+    return [
+      { label: "Plano carreira", value: overview.metrics.careerLeads, tone: "cyan", width: barWidth(overview.metrics.careerLeads, total) },
+      { label: "Internacional", value: overview.metrics.internationalLeads, tone: "violet", width: barWidth(overview.metrics.internationalLeads, total) },
+      { label: "Quentes", value: overview.metrics.hotLeads, tone: "amber", width: barWidth(overview.metrics.hotLeads, total) },
+      { label: "Fechados", value: overview.metrics.closed, tone: "green", width: barWidth(overview.metrics.closed, total) }
+    ];
+  }, [overview.metrics]);
+
+  const attributionCards = useMemo(() => {
+    const health = overview.attributionHealth;
+    return [
+      { label: "Leads do site", value: health.siteLeads, detail: `${health.attributionRate}% atribuidos`, tone: health.attributionRate >= 70 ? "green" : "amber" },
+      { label: "fbp/fbc/fbclid", value: health.fbpLeads + health.fbcLeads + health.fbclidLeads, detail: "sinais de navegador", tone: "cyan" },
+      { label: "Agendamentos", value: health.meetingEvents, detail: `${health.scheduleEvents} sinais Schedule`, tone: "violet" },
+      { label: "Purchase CRM", value: health.purchaseEvents, detail: health.purchaseSignalGap ? `${health.purchaseSignalGap} pendente` : "sem gap", tone: health.purchaseSignalGap ? "amber" : "green" }
+    ];
+  }, [overview.attributionHealth]);
+
+  const trafficReadinessScore = useMemo(() => {
+    const metaPoints = metaStatus?.readyForInsights ? 25 : 0;
+    const pixelPoints = metaStatus?.readyForQualityEvents ? 25 : 0;
+    const campaignPoints = activeCampaignRows.length ? 20 : 0;
+    const attributionPoints = normalizePercent(overview.attributionHealth.attributionRate, 20);
+    const schedulePoints = upcomingMeetings.length ? 10 : 0;
+    return Math.round(metaPoints + pixelPoints + campaignPoints + attributionPoints + schedulePoints);
+  }, [activeCampaignRows.length, metaStatus?.readyForInsights, metaStatus?.readyForQualityEvents, overview.attributionHealth.attributionRate, upcomingMeetings.length]);
+
+  const creativeRows = useMemo(() => {
+    const adRows = (overview.adPerformance ?? []).map((item) => {
+      const spend = numberValue(item.spend);
+      const clicks = numberValue(item.clicks);
+      const impressions = numberValue(item.impressions);
+      const leads = numberValue(item.leads);
+      const qualifiedLeads = numberValue(item.qualifiedLeads);
+      const purchases = numberValue(item.purchases);
+      const conversions = leads + qualifiedLeads + purchases;
+      const groupId = item.adsetId || item.campaignId || "sem-conjunto";
+      return {
+        id: item.adId || `${groupId}-${item.adName ?? "sem-anuncio"}`,
+        name: compactCampaignName(item.adName || item.campaignName),
+        groupId,
+        groupName: compactCampaignName(item.adsetName || item.campaignName),
+        campaignName: compactCampaignName(item.campaignName),
+        status: item.status,
+        spend,
+        impressions,
+        clicks,
+        conversions,
+        leads,
+        qualifiedLeads,
+        purchases,
+        ctr: numberValue(item.ctr),
+        cpc: numberValue(item.cpc),
+        source: "ad" as const
+      };
+    });
+
+    const fallbackRows = activeCampaignRows.map((campaign) => {
+      const conversions = campaign.leads + numberValue(campaign.qualified_leads) + numberValue(campaign.purchases);
+      return {
+        id: campaign.campaign_id || campaign.name,
+        name: campaign.name,
+        groupId: campaign.campaign_id || campaign.name,
+        groupName: campaign.name,
+        campaignName: campaign.name,
+        status: campaign.status,
+        spend: campaign.spend,
+        impressions: campaign.impressions,
+        clicks: campaign.clicks,
+        conversions,
+        leads: campaign.leads,
+        qualifiedLeads: numberValue(campaign.qualified_leads),
+        purchases: numberValue(campaign.purchases),
+        ctr: campaign.ctr,
+        cpc: campaign.cpc,
+        source: "campaign" as const
+      };
+    });
+
+    return (adRows.length ? adRows : fallbackRows)
+      .sort((a, b) => (b.conversions - a.conversions) || (b.clicks - a.clicks) || (b.spend - a.spend))
+      .slice(0, 12);
+  }, [activeCampaignRows, overview.adPerformance]);
+
+  const budgetSegments = useMemo(() => {
+    const grouped = new Map<string, {
+      id: string;
+      name: string;
+      spend: number;
+      clicks: number;
+      conversions: number;
+      metric: number;
+    }>();
+
+    for (const row of creativeRows) {
+      const current = grouped.get(row.groupId) ?? {
+        id: row.groupId,
+        name: row.groupName,
+        spend: 0,
+        clicks: 0,
+        conversions: 0,
+        metric: 0
+      };
+      current.spend += row.spend;
+      current.clicks += row.clicks;
+      current.conversions += row.conversions;
+      current.metric += row.spend || row.clicks || row.conversions || 1;
+      grouped.set(row.groupId, current);
+    }
+
+    const rows = Array.from(grouped.values()).sort((a, b) => b.metric - a.metric).slice(0, 6);
+    const totalMetric = Math.max(1, rows.reduce((sum, item) => sum + item.metric, 0));
+    return rows.map((item, index) => ({
+      ...item,
+      color: trafficPalette[index % trafficPalette.length],
+      percent: (item.metric / totalMetric) * 100
+    }));
+  }, [creativeRows]);
+
+  const budgetDonutGradient = useMemo(() => {
+    if (!budgetSegments.length) return "conic-gradient(rgba(91, 255, 219, 0.28), rgba(85, 216, 255, 0.12))";
+    let cursor = 0;
+    return `conic-gradient(${budgetSegments.map((segment) => {
+      const start = cursor;
+      cursor += segment.percent;
+      return `${segment.color} ${start}% ${cursor}%`;
+    }).join(", ")})`;
+  }, [budgetSegments]);
+
+  const selectedCreativeRows = useMemo(() => {
+    if (!selectedBudgetSegment) return creativeRows;
+    const rows = creativeRows.filter((row) => row.groupId === selectedBudgetSegment);
+    return rows.length ? rows : creativeRows;
+  }, [creativeRows, selectedBudgetSegment]);
+
+  const leadPageTrend = useMemo(() => {
+    const points = dailySeries.slice(-7);
+    const maxClicks = Math.max(1, ...points.map((item) => item.clicks));
+    const maxLeads = Math.max(1, ...points.map((item) => item.leads + item.qualifiedLeads + item.purchases));
+    return points.map((point) => {
+      const conversions = point.leads + point.qualifiedLeads + point.purchases;
+      return {
+        ...point,
+        label: formatShortDate(point.date),
+        conversions,
+        clicksHeight: barWidth(point.clicks, maxClicks),
+        leadsHeight: barWidth(conversions, maxLeads)
+      };
+    });
+  }, [dailySeries]);
+
+  const selectedAgendaDate = selectedMeetingDate ?? meetingDays[0]?.date ?? localDayKey(new Date());
+
+  const agendaSellerOptions = useMemo(() => {
+    const names = new Set(upcomingMeetings.map((meeting) => meeting.sellerName || "Sem vendedor"));
+    return ["Todos", ...Array.from(names).sort((a, b) => a.localeCompare(b, "pt-BR"))];
+  }, [upcomingMeetings]);
+
+  const agendaCalendar = useMemo(() => {
+    const baseDate = parseDateKey(selectedAgendaDate) ?? new Date();
+    const year = baseDate.getFullYear();
+    const month = baseDate.getMonth();
+    const firstDay = new Date(year, month, 1);
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const meetingCountByDay = new Map<string, number>();
+    for (const meeting of upcomingMeetings) {
+      const key = dayKey(meeting.startsAt);
+      meetingCountByDay.set(key, (meetingCountByDay.get(key) ?? 0) + 1);
+    }
+
+    const cells: Array<{ key: string; date?: string; day?: number; count?: number; isToday?: boolean; empty?: boolean }> = [];
+    for (let index = 0; index < firstDay.getDay(); index += 1) {
+      cells.push({ key: `empty-${index}`, empty: true });
+    }
+    for (let day = 1; day <= daysInMonth; day += 1) {
+      const key = localDayKey(new Date(year, month, day));
+      cells.push({
+        key,
+        date: key,
+        day,
+        count: meetingCountByDay.get(key) ?? 0,
+        isToday: key === localDayKey(new Date())
+      });
+    }
+    return { title: monthTitle(selectedAgendaDate), cells };
+  }, [selectedAgendaDate, upcomingMeetings]);
+
+  const filteredAgendaMeetings = useMemo(() => {
+    return upcomingMeetings.filter((meeting) => {
+      const sameDay = dayKey(meeting.startsAt) === selectedAgendaDate;
+      const sameSeller = selectedSellerFilter === "Todos" || (meeting.sellerName || "Sem vendedor") === selectedSellerFilter;
+      return sameDay && sameSeller;
+    });
+  }, [selectedAgendaDate, selectedSellerFilter, upcomingMeetings]);
+
+  const leadPageConversionRate = mediaSummary.clicks
+    ? ((overview.attributionHealth.siteLeads || mediaSummary.leads) / mediaSummary.clicks) * 100
+    : 0;
+  const costPerSiteLead = overview.attributionHealth.siteLeads
+    ? mediaSummary.spend / overview.attributionHealth.siteLeads
+    : mediaSummary.leads
+      ? mediaSummary.spend / mediaSummary.leads
+      : 0;
+
   const topCampaign = campaignRows[0];
   const mainBottleneck = segments.reduce((best, item) => (item.value > best.value ? item : best), segments[0] ?? { title: "Sem dados", value: 0 });
+  const maxCreativeImpact = Math.max(1, ...selectedCreativeRows.map((row) => row.conversions || row.clicks || row.spend));
   const quickRead = mediaSummary.campaigns
-    ? `Gargalo principal: ${mainBottleneck.title} (${mainBottleneck.value}). Campanha com mais investimento: ${shortText(topCampaign?.name ?? "sem dados")}.`
+    ? `Gargalo principal: ${mainBottleneck.title} (${mainBottleneck.value}). Campanha em destaque: ${shortText(topCampaign?.name ?? "sem dados")}.`
     : "Sincronize a Meta para ver campanhas, custos e cliques neste painel.";
 
   async function loadOverview() {
+    const requestId = overviewRequestRef.current + 1;
+    overviewRequestRef.current = requestId;
     setLoading(true);
     setError(null);
     try {
       const data = await apiJson<TrafficOverview>("/api/traffic?action=overview&days=30");
+      if (requestId !== overviewRequestRef.current) return;
       setOverview({
         ...emptyOverview,
         ...data,
@@ -334,12 +783,20 @@ export function TrafficPanel({ isAdmin }: { isAdmin: boolean }) {
         recentEvents: data.recentEvents ?? [],
         recommendations: data.recommendations ?? [],
         drafts: data.drafts ?? [],
-        snapshots: data.snapshots ?? []
+        snapshots: data.snapshots ?? [],
+        adPerformance: data.adPerformance ?? [],
+        dailySeries: data.dailySeries ?? [],
+        meetings: data.meetings ?? [],
+        attributionHealth: { ...emptyOverview.attributionHealth, ...(data.attributionHealth ?? {}) }
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Falha ao carregar trafego.");
+      if (requestId === overviewRequestRef.current) {
+        setError(err instanceof Error ? err.message : "Falha ao carregar trafego.");
+      }
     } finally {
-      setLoading(false);
+      if (requestId === overviewRequestRef.current) {
+        setLoading(false);
+      }
     }
   }
 
@@ -405,15 +862,22 @@ export function TrafficPanel({ isAdmin }: { isAdmin: boolean }) {
 
   async function loadMetaStatus() {
     if (!isAdmin) return;
+    const requestId = metaStatusRequestRef.current + 1;
+    metaStatusRequestRef.current = requestId;
     setMetaLoading(true);
     setError(null);
     try {
       const data = await apiJson<MetaStatus>("/api/traffic?action=meta-status");
+      if (requestId !== metaStatusRequestRef.current) return;
       setMetaStatus(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Falha ao verificar Meta.");
+      if (requestId === metaStatusRequestRef.current) {
+        setError(err instanceof Error ? err.message : "Falha ao verificar Meta.");
+      }
     } finally {
-      setMetaLoading(false);
+      if (requestId === metaStatusRequestRef.current) {
+        setMetaLoading(false);
+      }
     }
   }
 
@@ -499,6 +963,7 @@ export function TrafficPanel({ isAdmin }: { isAdmin: boolean }) {
 
   return (
     <section className="traffic-panel">
+      {isAdmin ? <BhPrimeManager /> : null}
       <div className="traffic-toolbar">
         <div>
           <h2>Gestao de trafego IA</h2>
@@ -554,6 +1019,327 @@ export function TrafficPanel({ isAdmin }: { isAdmin: boolean }) {
         <TrafficMetric icon={<BarChart3 size={18} />} label="Score medio" value={String(Math.round(overview.metrics.averageScore))} />
       </div>
 
+      <section className="traffic-command-center">
+        <div className="command-score">
+          <Gauge size={22} />
+          <span>Prontidao operacional</span>
+          <strong>{trafficReadinessScore}%</strong>
+          <small>Meta, pixel, CAPI, campanha e agenda</small>
+        </div>
+        <div className="command-grid">
+          <TrafficMetric icon={<Radio size={18} />} label="Campanhas ativas" value={String(activeCampaignRows.length)} detail={`${campaignRows.length} sincronizadas`} />
+          <TrafficMetric icon={<Activity size={18} />} label="Sinais qualidade" value={String(overview.attributionHealth.qualifiedEvents + overview.attributionHealth.scheduleEvents + overview.attributionHealth.purchaseEvents)} detail="CRM -> Meta" />
+          <TrafficMetric icon={<CalendarDays size={18} />} label="Reunioes futuras" value={String(upcomingMeetings.length)} detail={`${sellerMeetingStats.length} vendedores`} />
+          <TrafficMetric icon={<Link2 size={18} />} label="Atribuicao site" value={formatPercent(overview.attributionHealth.attributionRate)} detail={`${overview.attributionHealth.attributedLeads}/${overview.attributionHealth.siteLeads}`} />
+        </div>
+      </section>
+
+      <div className="traffic-deep-title">
+        <div>
+          <h2><BarChart3 size={24} /> Analise profunda de campanhas</h2>
+          <span>Orcamento, criativos, lead page, CRM e agenda em uma leitura unica.</span>
+        </div>
+        <span className="traffic-live-pill"><Activity size={14} /> Live data</span>
+      </div>
+
+      <div className="traffic-deep-grid">
+        <section className="traffic-section neon-card budget-lab-card">
+          <div className="section-heading">
+            <div>
+              <h2>Orcamento por conjunto</h2>
+              <span>Clique para filtrar os criativos daquele grupo.</span>
+            </div>
+            <small>{creativeRows[0]?.source === "ad" ? "Nivel anuncio" : "Nivel campanha"}</small>
+          </div>
+
+          <div className="budget-donut-wrap">
+            <button
+              className="budget-donut"
+              type="button"
+              onClick={() => setSelectedBudgetSegment(null)}
+              style={{ background: budgetDonutGradient }}
+              title="Limpar filtro de conjunto"
+            >
+              <span>
+                <strong>
+                  {selectedBudgetSegment
+                    ? `${Math.round(budgetSegments.find((segment) => segment.id === selectedBudgetSegment)?.percent ?? 100)}%`
+                    : "100%"}
+                </strong>
+                <small>{selectedBudgetSegment ? "Selecionado" : "Distribuido"}</small>
+              </span>
+            </button>
+          </div>
+
+          <div className="budget-segment-list">
+            {budgetSegments.map((segment) => (
+              <button
+                className={`budget-segment ${selectedBudgetSegment === segment.id ? "selected" : ""}`}
+                type="button"
+                key={segment.id}
+                onClick={() => setSelectedBudgetSegment(selectedBudgetSegment === segment.id ? null : segment.id)}
+              >
+                <i style={{ backgroundColor: segment.color, boxShadow: `0 0 12px ${segment.color}` }} />
+                <span>{shortText(segment.name, 32)}</span>
+                <strong>{formatMoney(segment.spend)}</strong>
+                <small>{Math.round(segment.percent)}% | {formatCompact(segment.clicks)} cliques</small>
+              </button>
+            ))}
+            {!budgetSegments.length ? <p className="empty-state">Sincronize a Meta para calcular distribuicao de orcamento.</p> : null}
+          </div>
+        </section>
+
+        <section className="traffic-section neon-card creative-rank-card">
+          <div className="section-heading">
+            <div>
+              <h2>Ranking de criativos</h2>
+              <span>{selectedBudgetSegment ? "Filtro aplicado por conjunto" : "Classificados por conversao, clique e gasto."}</span>
+            </div>
+            {selectedBudgetSegment ? (
+              <button className="ghost-action" type="button" onClick={() => setSelectedBudgetSegment(null)}>
+                <X size={14} /> Limpar
+              </button>
+            ) : (
+              <MousePointerClick size={18} />
+            )}
+          </div>
+
+          <div className="creative-rank-list">
+            {selectedCreativeRows.map((row, index) => {
+              const impact = row.conversions || row.clicks || row.spend;
+              return (
+                <article className="creative-rank-row" key={row.id}>
+                  <div className={`creative-rank-number ${index < 3 ? "top" : ""}`}>#{index + 1}</div>
+                  <div className="creative-rank-main">
+                    <div>
+                      <strong>{shortText(row.name, 70)}</strong>
+                      <span>{shortText(row.groupName, 76)}</span>
+                    </div>
+                    <div className="creative-metrics">
+                      <small>CTR {formatPercent(row.ctr)}</small>
+                      <small>CPC {formatMoney(row.cpc)}</small>
+                      <small>Gasto {formatMoney(row.spend)}</small>
+                    </div>
+                    <div className="creative-impact-track">
+                      <i style={{ width: barWidth(impact, maxCreativeImpact) }} />
+                    </div>
+                  </div>
+                  <div className="creative-rank-result">
+                    <span>{isActiveMetaStatus(row.status) ? "Ativo" : row.status || "Lido"}</span>
+                    <strong>{formatCompact(row.conversions)}</strong>
+                    <small>conversoes</small>
+                  </div>
+                </article>
+              );
+            })}
+            {!selectedCreativeRows.length ? (
+              <div className="creative-empty-state">
+                <PieChartIcon size={42} />
+                <strong>Sem criativos individuais ainda</strong>
+                <span>Sincronize a Meta para puxar anuncios, conjuntos e leitura de criativo.</span>
+              </div>
+            ) : null}
+          </div>
+        </section>
+      </div>
+
+      <div className="traffic-bottom-premium">
+        <section className="traffic-section neon-card agenda-compact-card">
+          <div
+            className="agenda-open-card"
+            role="button"
+            tabIndex={0}
+            onClick={() => setShowAgendaModal(true)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") setShowAgendaModal(true);
+            }}
+          >
+            <div className="section-heading">
+              <div>
+                <h2><UsersRound size={18} /> CRM & Agenda</h2>
+                <span>Vendedores, servicos e reunioes futuras.</span>
+              </div>
+              <CalendarDays size={20} />
+            </div>
+
+            <div className="seller-mini-grid">
+              {sellerMeetingStats.slice(0, 4).map((seller) => (
+                <article className="seller-mini-card" key={seller.sellerName}>
+                  <UserCheck size={18} />
+                  <strong>{seller.sellerName}</strong>
+                  <span>{seller.total} reunioes</span>
+                  <small>Carreira {seller.career} | Inter {seller.international}</small>
+                </article>
+              ))}
+              {!sellerMeetingStats.length ? <p className="empty-state">Nenhum vendedor com reuniao futura.</p> : null}
+            </div>
+
+            <span className="agenda-open-cta">Abrir gestao completa <ChevronRight size={16} /></span>
+          </div>
+        </section>
+
+        <section className="traffic-section neon-card leadpage-card">
+          <div className="section-heading">
+            <div>
+              <h2>Performance Lead Page</h2>
+              <span>Cliques Meta, leads do site e atribuicao por pixel/CAPI.</span>
+            </div>
+            <Link2 size={18} />
+          </div>
+
+          <div className="leadpage-bars">
+            {leadPageTrend.map((point) => (
+              <div className="leadpage-day" key={point.date}>
+                <div>
+                  <span className="clicks" style={{ height: point.clicksHeight }} title={`${point.clicks} cliques`} />
+                  <span className="leads" style={{ height: point.leadsHeight }} title={`${point.conversions} leads`} />
+                </div>
+                <small>{point.label}</small>
+              </div>
+            ))}
+            {!leadPageTrend.length ? <p className="empty-state">Sem serie diaria sincronizada para a lead page.</p> : null}
+          </div>
+
+          <div className="leadpage-legend">
+            <span><i className="clicks" /> Cliques</span>
+            <span><i className="leads" /> Leads / qualidade</span>
+          </div>
+
+          <div className="leadpage-stat-grid">
+            <article>
+              <span>Taxa lead page</span>
+              <strong>{formatPercent(leadPageConversionRate)}</strong>
+              <small>{formatCompact(overview.attributionHealth.siteLeads || mediaSummary.leads)} leads do site</small>
+            </article>
+            <article>
+              <span>Custo por lead</span>
+              <strong>{formatMoney(costPerSiteLead)}</strong>
+              <small>{formatMoney(mediaSummary.spend)} investidos</small>
+            </article>
+            <article>
+              <span>Atribuicao</span>
+              <strong>{formatPercent(overview.attributionHealth.attributionRate)}</strong>
+              <small>{overview.attributionHealth.attributedLeads}/{overview.attributionHealth.siteLeads} com sinal</small>
+            </article>
+          </div>
+
+          <div className="service-focus-strip">
+            {serviceMix.map((item) => (
+              <div className={`service-mix-row ${item.tone}`} key={item.label}>
+                <span>{item.label}</span>
+                <div className="service-mix-track">
+                  <i style={{ width: item.width }} />
+                </div>
+                <strong>{item.value}</strong>
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
+
+      {showAgendaModal ? (
+        <div className="traffic-agenda-modal" role="dialog" aria-modal="true" aria-label="Gestao de Agenda e CRM">
+          <div className="agenda-modal-panel">
+            <header className="agenda-modal-header">
+              <div>
+                <CalendarDays size={24} />
+                <div>
+                  <h2>Gestao de Agenda & CRM</h2>
+                  <span>Calendario consolidado por vendedor e servico.</span>
+                </div>
+              </div>
+              <button type="button" onClick={() => setShowAgendaModal(false)} title="Fechar agenda">
+                <X size={22} />
+              </button>
+            </header>
+
+            <div className="agenda-modal-body">
+              <aside className="agenda-calendar-panel">
+                <div className="agenda-month-head">
+                  <button type="button" title="Mes anterior"><ChevronLeft size={16} /></button>
+                  <strong>{agendaCalendar.title}</strong>
+                  <button type="button" title="Proximo mes"><ChevronRight size={16} /></button>
+                </div>
+
+                <div className="agenda-weekdays">
+                  {["D", "S", "T", "Q", "Q", "S", "S"].map((day, index) => <span key={`${day}-${index}`}>{day}</span>)}
+                </div>
+                <div className="agenda-calendar-grid">
+                  {agendaCalendar.cells.map((cell) => (
+                    cell.empty ? (
+                      <span className="agenda-day-empty" key={cell.key} />
+                    ) : (
+                      <button
+                        className={`agenda-day-button ${selectedAgendaDate === cell.date ? "selected" : ""} ${cell.isToday ? "today" : ""}`}
+                        type="button"
+                        key={cell.key}
+                        onClick={() => cell.date && setSelectedMeetingDate(cell.date)}
+                      >
+                        <span>{cell.day}</span>
+                        {cell.count ? <small>{cell.count}</small> : null}
+                      </button>
+                    )
+                  ))}
+                </div>
+
+                <div className="agenda-seller-filter">
+                  <h3>Filtrar vendedor</h3>
+                  {agendaSellerOptions.map((seller) => (
+                    <button
+                      className={selectedSellerFilter === seller ? "selected" : ""}
+                      type="button"
+                      key={seller}
+                      onClick={() => setSelectedSellerFilter(seller)}
+                    >
+                      <span>{seller}</span>
+                      <small>{seller === "Todos" ? upcomingMeetings.length : upcomingMeetings.filter((meeting) => (meeting.sellerName || "Sem vendedor") === seller).length}</small>
+                    </button>
+                  ))}
+                </div>
+              </aside>
+
+              <section className="agenda-list-panel">
+                <div className="agenda-list-head">
+                  <div>
+                    <h3>Reunioes marcadas</h3>
+                    <span>{formatDateKeyWeekday(selectedAgendaDate)} {formatDateKeyShort(selectedAgendaDate)} | {selectedSellerFilter}</span>
+                  </div>
+                  <strong>{filteredAgendaMeetings.length}</strong>
+                </div>
+
+                <div className="agenda-meeting-list">
+                  {filteredAgendaMeetings.map((meeting) => (
+                    <article className="agenda-meeting-row" key={`${meeting.clientId}-${meeting.startsAt}`}>
+                      <div className="priority-edge" />
+                      <div className="agenda-avatar">
+                        {String(meeting.clientName || "L").slice(0, 1).toUpperCase()}
+                      </div>
+                      <div>
+                        <strong>{meeting.clientName || "Lead sem nome"}</strong>
+                        <span>{serviceLabel[meeting.serviceInterest ?? "nao_definido"] ?? meeting.serviceInterest ?? "Servico nao definido"}</span>
+                        <small>{meeting.sellerName || "Sem vendedor"} | {leadStatusLabel[meeting.status ?? ""] ?? meeting.status ?? "sem status"}</small>
+                      </div>
+                      <div className="agenda-time-pill">
+                        <Clock3 size={15} />
+                        <strong>{formatMeetingTime(meeting.startsAt)}</strong>
+                        {meeting.meetUrl ? <a href={meeting.meetUrl} target="_blank" rel="noreferrer">Meet</a> : null}
+                      </div>
+                    </article>
+                  ))}
+                  {!filteredAgendaMeetings.length ? (
+                    <div className="agenda-empty-state">
+                      <CalendarDays size={42} />
+                      <strong>Nenhuma reuniao neste filtro</strong>
+                      <span>Escolha outra data ou vendedor para visualizar a agenda.</span>
+                    </div>
+                  ) : null}
+                </div>
+              </section>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {isAdmin && metaStatus ? (
         <section className={`traffic-section meta-status-card ${metaStatus.readyForInsights ? "ready" : "blocked"}`}>
           <div className="section-heading">
@@ -564,6 +1350,7 @@ export function TrafficPanel({ isAdmin }: { isAdmin: boolean }) {
             <MetaCheck label="Token" ok={Boolean(metaStatus.checks.find((item) => item.name === "token")?.ok)} />
             <MetaCheck label="Conta de anuncios" ok={Boolean(metaStatus.checks.find((item) => item.name === "ad_account")?.ok)} />
             <MetaCheck label="Insights" ok={metaStatus.readyForInsights} />
+            <MetaCheck label="Landing Pixel" ok={Boolean(metaStatus.checks.find((item) => item.name === "landing_pixel")?.ok)} />
             <MetaCheck label="Pixel/CAPI" ok={metaStatus.readyForQualityEvents} />
           </div>
           {metaStatus.requiredActions.length ? (
@@ -746,15 +1533,15 @@ export function TrafficPanel({ isAdmin }: { isAdmin: boolean }) {
 
       <section className="traffic-section campaign-visual-section">
         <div className="section-heading">
-          <h2>Campanhas Meta</h2>
-          <span>{campaignRows.length} em leitura</span>
+          <h2>Campanhas ativas Meta</h2>
+          <span>{activeCampaignRows.length} ativas / {campaignRows.length} sincronizadas</span>
         </div>
         <div className="campaign-board">
-          {campaignRows.map((campaign) => (
+          {activeCampaignRows.map((campaign) => (
             <div className="campaign-card" key={`${campaign.campaign_id ?? campaign.name}`}>
               <div className="campaign-card-head">
                 <strong>{campaign.name}</strong>
-                <span className={`campaign-health ${campaign.health.tone}`}>{campaign.health.label}</span>
+                <span className={`campaign-health ${campaign.health.tone}`}>{isActiveMetaStatus(campaign.status) ? "Ativa" : campaign.health.label}</span>
               </div>
               <div className="campaign-bars">
                 <div className="campaign-bar">
@@ -777,10 +1564,12 @@ export function TrafficPanel({ isAdmin }: { isAdmin: boolean }) {
                 <small>{formatPercent(campaign.ctr)} CTR</small>
                 <small>{formatMoney(campaign.cpc)} CPC</small>
                 <small>{campaign.leads} leads</small>
+                <small>{numberValue(campaign.qualified_leads)} qualificados</small>
+                <small>{numberValue(campaign.purchases)} compras</small>
               </div>
             </div>
           ))}
-          {!campaignRows.length ? <p className="empty-state">Sem campanhas sincronizadas. Clique em Meta para importar os dados.</p> : null}
+          {!activeCampaignRows.length ? <p className="empty-state">Sem campanhas ativas sincronizadas. Clique em Meta para importar os dados.</p> : null}
         </div>
       </section>
 

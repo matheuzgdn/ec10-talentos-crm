@@ -137,8 +137,8 @@ try {
     select
       c.id,
       case
-        when c.service_interest = 'plano_internacional' then coalesce(nullif(b.metadata #>> '{meetingSellerPhone}', ''), '+55 31 9852-6146')
-        else coalesce(nullif(b.metadata #>> '{meetingSellerPhone}', ''), '+55 31 9852-6146')
+        when c.service_interest = 'plano_internacional' then coalesce(nullif(b.metadata #>> '{meetingSellerPhone}', ''), '+55 31 8233-1411')
+        else coalesce(nullif(b.metadata #>> '{meetingSellerPhone}', ''), '+55 31 8876-4692')
       end as seller_phone,
       concat(
         'Alerta EC10: follow-up indevido corrigido.', E'\\n',

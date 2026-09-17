@@ -25,6 +25,66 @@ export type TrafficContext = {
   recommendations: any[];
   drafts: any[];
   snapshots: any[];
+  adPerformance: Array<{
+    campaignId: string | null;
+    campaignName: string | null;
+    adsetId: string | null;
+    adsetName: string | null;
+    adId: string | null;
+    adName: string | null;
+    status: string | null;
+    spend: number;
+    impressions: number;
+    clicks: number;
+    leads: number;
+    qualifiedLeads: number;
+    purchases: number;
+    ctr: number;
+    cpc: number;
+    lastSyncedAt: string | null;
+  }>;
+  dailySeries: Array<{
+    date: string;
+    spend: number;
+    impressions: number;
+    clicks: number;
+    leads: number;
+    qualifiedLeads: number;
+    proposals: number;
+    purchases: number;
+    ctr: number;
+    cpc: number;
+  }>;
+  meetings: Array<{
+    clientId: string;
+    clientName: string | null;
+    phone: string | null;
+    status: string | null;
+    serviceInterest: string | null;
+    sellerId: string | null;
+    sellerName: string | null;
+    sellerRoute: string | null;
+    startsAt: string;
+    endsAt: string | null;
+    meetUrl: string | null;
+    sellerNotified: boolean;
+    updatedAt: string | null;
+  }>;
+  attributionHealth: {
+    siteLeads: number;
+    attributedLeads: number;
+    fbpLeads: number;
+    fbcLeads: number;
+    fbclidLeads: number;
+    closedClients: number;
+    closedWithAttribution: number;
+    qualifiedEvents: number;
+    scheduleEvents: number;
+    purchaseEvents: number;
+    meetingEvents: number;
+    attributionRate: number;
+    purchaseSignalGap: number;
+  };
 };
 
 export type TrafficRecommendationInput = {
@@ -49,7 +109,8 @@ function asNumber(value: unknown) {
 }
 
 function clampConfidence(value: unknown) {
-  const numberValue = Math.round(asNumber(value));
+  const rawValue = asNumber(value);
+  const numberValue = Math.round(rawValue > 0 && rawValue <= 1 ? rawValue * 100 : rawValue);
   return Math.max(0, Math.min(100, numberValue || 60));
 }
 
@@ -167,10 +228,148 @@ export async function loadTrafficContext(periodDaysInput = 30): Promise<TrafficC
     [periodDays]
   );
 
+  const adPerformance = await safeRows(
+    pool,
+    `
+      select
+        campaign_id,
+        campaign_name,
+        adset_id,
+        adset_name,
+        ad_id,
+        ad_name,
+        max(status) as status,
+        sum(spend)::numeric(12,2) as spend,
+        sum(impressions)::int as impressions,
+        sum(clicks)::int as clicks,
+        sum(leads)::int as leads,
+        sum(qualified_leads)::int as qualified_leads,
+        sum(purchases)::int as purchases,
+        case when sum(impressions) > 0 then (sum(clicks)::numeric / sum(impressions)::numeric) * 100 else 0 end as ctr,
+        case when sum(clicks) > 0 then sum(spend)::numeric / sum(clicks)::numeric else 0 end as cpc,
+        max(created_at) as last_synced_at
+      from public.traffic_campaign_snapshots
+      where date_start >= current_date - ($1::int * interval '1 day')
+        and nullif(ad_id, '') is not null
+      group by campaign_id, campaign_name, adset_id, adset_name, ad_id, ad_name
+      order by sum(coalesce(leads, 0) + coalesce(qualified_leads, 0) + coalesce(purchases, 0)) desc,
+               sum(clicks) desc,
+               sum(spend) desc nulls last
+      limit 24
+    `,
+    [periodDays]
+  );
+
+  const dailySeries = await safeRows(
+    pool,
+    `
+      select date_start::text as date,
+             sum(spend)::numeric(12,2) as spend,
+             sum(impressions)::int as impressions,
+             sum(clicks)::int as clicks,
+             sum(leads)::int as leads,
+             sum(qualified_leads)::int as qualified_leads,
+             sum(proposals)::int as proposals,
+             sum(purchases)::int as purchases,
+             case when sum(impressions) > 0 then (sum(clicks)::numeric / sum(impressions)::numeric) * 100 else 0 end as ctr,
+             case when sum(clicks) > 0 then sum(spend)::numeric / sum(clicks)::numeric else 0 end as cpc
+      from public.traffic_campaign_snapshots
+      where date_start >= current_date - ($1::int * interval '1 day')
+      group by date_start
+      order by date_start asc
+      limit 180
+    `,
+    [periodDays]
+  );
+
+  const meetings = await safeRows(
+    pool,
+    `
+      select
+        c.id as client_id,
+        c.name as client_name,
+        c.phone,
+        c.status,
+        c.service_interest,
+        c.assigned_seller_id as seller_id,
+        coalesce(s.name, b.metadata #>> '{meetingSellerName}', 'Sem vendedor') as seller_name,
+        b.metadata #>> '{meetingSellerRoute}' as seller_route,
+        b.metadata #>> '{meeting,startsAt}' as starts_at,
+        b.metadata #>> '{meeting,endsAt}' as ends_at,
+        b.metadata #>> '{meetingMeetUrl}' as meet_url,
+        coalesce((b.metadata #>> '{meetingSellerNotified}')::boolean, false) as seller_notified,
+        b.updated_at
+      from public.bot_conversation_states b
+      join public.clients c on c.id = b.client_id
+      left join public.sellers s on s.id = c.assigned_seller_id
+      where nullif(b.metadata #>> '{meeting,startsAt}', '') is not null
+        and (b.metadata #>> '{meeting,startsAt}') ~ '^\\d{4}-\\d{2}-\\d{2}'
+        and (b.metadata #>> '{meeting,startsAt}')::timestamptz >= now() - interval '7 days'
+        and (b.metadata #>> '{meeting,startsAt}')::timestamptz <= now() + interval '60 days'
+      order by (b.metadata #>> '{meeting,startsAt}')::timestamptz asc
+      limit 160
+    `
+  );
+
+  const attributionRows = await safeRows(
+    pool,
+    `
+      select
+        count(*) filter (where source = 'site')::int as site_leads,
+        count(*) filter (
+          where source = 'site'
+            and (
+              nullif(utm_source, '') is not null
+              or nullif(utm_campaign, '') is not null
+              or nullif(fbclid, '') is not null
+              or nullif(attribution_metadata ->> 'fbp', '') is not null
+              or nullif(attribution_metadata ->> 'fbc', '') is not null
+            )
+        )::int as attributed_leads,
+        count(*) filter (where nullif(attribution_metadata ->> 'fbp', '') is not null)::int as fbp_leads,
+        count(*) filter (where nullif(attribution_metadata ->> 'fbc', '') is not null)::int as fbc_leads,
+        count(*) filter (where nullif(fbclid, '') is not null)::int as fbclid_leads,
+        count(*) filter (where status = 'fechado')::int as closed_clients,
+        count(*) filter (
+          where status = 'fechado'
+            and (
+              nullif(utm_source, '') is not null
+              or nullif(utm_campaign, '') is not null
+              or nullif(fbclid, '') is not null
+              or nullif(attribution_metadata ->> 'fbp', '') is not null
+              or nullif(attribution_metadata ->> 'fbc', '') is not null
+            )
+        )::int as closed_with_attribution
+      from public.clients
+      where created_at >= now() - ($1::int * interval '1 day')
+    `,
+    [periodDays]
+  );
+
+  const qualityRows = await safeRows(
+    pool,
+    `
+      select
+        count(*) filter (where event_type = 'qualified_lead')::int as qualified_events,
+        count(*) filter (where event_type in ('proposal_requested', 'bot_meeting_scheduled'))::int as schedule_events,
+        count(*) filter (where event_type = 'purchase')::int as purchase_events,
+        count(*) filter (where event_type = 'bot_meeting_scheduled')::int as meeting_events
+      from public.traffic_events
+      where occurred_at >= now() - ($1::int * interval '1 day')
+    `,
+    [periodDays]
+  );
+
   const rawMetrics = metricsRows[0] ?? {};
   const totalLeads = asNumber(rawMetrics.total_leads);
   const hotLeads = asNumber(rawMetrics.hot_leads);
   const closed = asNumber(rawMetrics.closed);
+  const rawAttribution = attributionRows[0] ?? {};
+  const rawQuality = qualityRows[0] ?? {};
+  const siteLeads = asNumber(rawAttribution.site_leads);
+  const attributedLeads = asNumber(rawAttribution.attributed_leads);
+  const closedClients = asNumber(rawAttribution.closed_clients);
+  const purchaseEvents = asNumber(rawQuality.purchase_events);
 
   return {
     periodDays,
@@ -198,7 +397,67 @@ export async function loadTrafficContext(periodDaysInput = 30): Promise<TrafficC
     recentEvents,
     recommendations,
     drafts,
-    snapshots
+    snapshots,
+    adPerformance: adPerformance.map((row) => ({
+      campaignId: row.campaign_id,
+      campaignName: row.campaign_name,
+      adsetId: row.adset_id,
+      adsetName: row.adset_name,
+      adId: row.ad_id,
+      adName: row.ad_name,
+      status: row.status,
+      spend: asNumber(row.spend),
+      impressions: asNumber(row.impressions),
+      clicks: asNumber(row.clicks),
+      leads: asNumber(row.leads),
+      qualifiedLeads: asNumber(row.qualified_leads),
+      purchases: asNumber(row.purchases),
+      ctr: Number(asNumber(row.ctr).toFixed(2)),
+      cpc: Number(asNumber(row.cpc).toFixed(2)),
+      lastSyncedAt: row.last_synced_at
+    })),
+    dailySeries: dailySeries.map((row) => ({
+      date: row.date,
+      spend: asNumber(row.spend),
+      impressions: asNumber(row.impressions),
+      clicks: asNumber(row.clicks),
+      leads: asNumber(row.leads),
+      qualifiedLeads: asNumber(row.qualified_leads),
+      proposals: asNumber(row.proposals),
+      purchases: asNumber(row.purchases),
+      ctr: Number(asNumber(row.ctr).toFixed(2)),
+      cpc: Number(asNumber(row.cpc).toFixed(2))
+    })),
+    meetings: meetings.map((row) => ({
+      clientId: row.client_id,
+      clientName: row.client_name,
+      phone: row.phone,
+      status: row.status,
+      serviceInterest: row.service_interest,
+      sellerId: row.seller_id,
+      sellerName: row.seller_name,
+      sellerRoute: row.seller_route,
+      startsAt: row.starts_at,
+      endsAt: row.ends_at,
+      meetUrl: row.meet_url,
+      sellerNotified: Boolean(row.seller_notified),
+      updatedAt: row.updated_at
+    })),
+    attributionHealth: {
+      siteLeads,
+      attributedLeads,
+      fbpLeads: asNumber(rawAttribution.fbp_leads),
+      fbcLeads: asNumber(rawAttribution.fbc_leads),
+      fbclidLeads: asNumber(rawAttribution.fbclid_leads),
+      closedClients,
+      closedWithAttribution: asNumber(rawAttribution.closed_with_attribution),
+      qualifiedEvents: asNumber(rawQuality.qualified_events),
+      scheduleEvents: asNumber(rawQuality.schedule_events),
+      purchaseEvents,
+      meetingEvents: asNumber(rawQuality.meeting_events),
+      attributionRate: siteLeads ? Number(((attributedLeads / siteLeads) * 100).toFixed(1)) : 0,
+      purchaseSignalGap: Math.max(0, closedClients - purchaseEvents)
+    }
   };
 }
 
@@ -407,6 +666,91 @@ function extractRecommendations(payload: any) {
   return list.map(normalizeRecommendation).filter(Boolean) as TrafficRecommendationInput[];
 }
 
+function ollamaBaseUrl() {
+  return String(process.env.OLLAMA_BASE_URL || "http://localhost:11434").replace(/\/+$/, "");
+}
+
+export async function callOllamaTrafficAgent(context: TrafficContext) {
+  const model = process.env.TRAFFIC_OLLAMA_MODEL || process.env.OLLAMA_MODEL || "qwen3:4b";
+  if (!model) return null;
+
+  const prompt = [
+    "Voce e a IA gestora de trafego da EC10 Talentos.",
+    "Analise CRM, WhatsApp, funil, campanhas Meta e sinais de qualidade para indicar proximas acoes.",
+    "Nunca recomende publicar ou gastar sem aprovacao humana no CRM.",
+    "Priorize recomendacoes operacionais, curtas e acionaveis para campanha, remarketing, qualidade de sinal e CRM.",
+    "Responda somente JSON valido no formato:",
+    "{\"recommendations\":[{\"title\":\"...\",\"summary\":\"...\",\"recommendationType\":\"campaign_draft|remarketing|quality_signal|crm_automation|budget_shift\",\"priority\":\"low|medium|high|urgent\",\"confidence\":0,\"impactArea\":\"...\",\"serviceInterest\":\"plano_carreira|plano_internacional|ambos\",\"ageGroup\":\"8-12|13-17|8-13|14-17|18-plus|8-17\",\"reasoning\":\"...\",\"evidence\":{},\"suggestedAction\":{}}]}",
+    "Gere no maximo 4 recomendacoes.",
+    `Contexto resumido: ${JSON.stringify(compactTrafficContext(context))}`
+  ].join("\n");
+
+  const response = await fetch(`${ollamaBaseUrl()}/api/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model,
+      think: false,
+      stream: false,
+      format: "json",
+      keep_alive: process.env.OLLAMA_KEEP_ALIVE || "5m",
+      messages: [
+        {
+          role: "system",
+          content: "Retorne somente JSON valido, sem markdown, sem explicacao."
+        },
+        {
+          role: "user",
+          content: `/no_think\n${prompt}`
+        }
+      ],
+      options: {
+        temperature: 0,
+        num_ctx: Number(process.env.TRAFFIC_OLLAMA_NUM_CTX || process.env.OLLAMA_NUM_CTX || 4096),
+        num_predict: Number(process.env.TRAFFIC_OLLAMA_MAX_OUTPUT_TOKENS || 1200)
+      }
+    }),
+    signal: AbortSignal.timeout(Number(process.env.TRAFFIC_OLLAMA_TIMEOUT_MS || 120000))
+  });
+
+  if (!response.ok) {
+    const message = await response.text().catch(() => "");
+    throw new Error(`Ollama traffic agent failed ${response.status}: ${message.slice(0, 160)}`);
+  }
+
+  const payload = await response.json().catch(() => null) as any;
+  const content = payload?.message?.content ?? payload;
+  return extractRecommendations(content);
+}
+
+function compactTrafficContext(context: TrafficContext) {
+  return {
+    periodDays: context.periodDays,
+    metrics: context.metrics,
+    attributionHealth: context.attributionHealth,
+    eventCounts: context.eventCounts.slice(0, 12),
+    ageGroups: context.ageGroups.slice(0, 8),
+    adPerformance: context.adPerformance.slice(0, 8),
+    dailySeries: context.dailySeries.slice(-14),
+    snapshots: context.snapshots.slice(0, 6),
+    meetings: context.meetings.slice(0, 12),
+    recentRecommendations: context.recommendations.slice(0, 8).map((item) => ({
+      title: item.title,
+      status: item.status,
+      priority: item.priority,
+      createdAt: item.created_at
+    })),
+    draftCount: context.drafts.length,
+    recentEventTypes: context.recentEvents.slice(0, 20).map((item) => ({
+      eventType: item.event_type ?? item.eventType,
+      serviceInterest: item.service_interest ?? item.serviceInterest,
+      ageGroup: item.age_group ?? item.ageGroup,
+      leadStatus: item.lead_status ?? item.leadStatus,
+      occurredAt: item.occurred_at ?? item.occurredAt
+    }))
+  };
+}
+
 export async function callBase44TrafficAgent(context: TrafficContext) {
   const endpoint = process.env.BASE44_TRAFFIC_AGENT_URL;
   const apiKey = process.env.BASE44_TRAFFIC_AGENT_API_KEY;
@@ -511,7 +855,7 @@ export async function callBase44TrafficAgent(context: TrafficContext) {
 
 export async function insertTrafficRecommendations(
   queryable: Queryable,
-  sellerId: string,
+  sellerId: string | null,
   recommendations: TrafficRecommendationInput[]
 ) {
   const inserted: any[] = [];

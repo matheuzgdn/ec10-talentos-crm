@@ -1,0 +1,17 @@
+{
+  "status": "running",
+  "topic": "Anderson SDR isolado para reunião qualificada",
+  "hypothesis": "Uma conversa consultiva, aspiracional e adaptada ao momento do atleta, com Plano de Carreira como base e validação do decisor, aumenta reuniões qualificadas com o responsável sem perder naturalidade.",
+  "owner": "EC10 Talentos / operação comercial",
+  "nextReview": "2026-09-17",
+  "evidence": [
+    "Modo de teste limitado a um único contato autorizado; demais contatos continuam registrados no CRM sem resposta automática.",
+    "Testes locais: 13 verificações do prompt, 5 de isolamento, 58 de execução, 376 de fluxo e 414 adversariais sem envio real de WhatsApp.",
+    "Três cenários com IA real passaram sem envio ao WhatsApp: adulto internacional, responsável de atleta infantil e menor sem responsável.",
+    "Card existente preservado, estado automatizado reiniciado com backup privado e serviço do WhatsApp confirmado como pronto.",
+    "Conhecimento confirmado: base da EC10 Talentos em Belo Horizonte, bairro Gutierrez."
+  ],
+  "decision": "Medir sucesso por reunião qualificada com responsável ou decisor, e não por volume de mensagens ou abertura da agenda. Manter uma pergunta por vez, adaptar o tom e só abrir agenda após objetivo, situação, dificuldade, decisor, investimento e prioridade.",
+  "result": "Implementação técnica validada; resultado comercial ainda depende do teste humano e de reuniões comparecidas.",
+  "rollback": "Backup privado do contato de teste preservado e isolamento removível por configuração de execução."
+}

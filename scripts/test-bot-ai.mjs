@@ -20,8 +20,8 @@ const salesReply = await generateEc10SalesReplyWithAi({
   history: [],
 });
 
-if (!salesReply?.reply || !/(assistente virtual|intelig[eê]ncia artificial)/i.test(salesReply.reply)) {
-  throw new Error("AI primary reply did not disclose that it is a virtual assistant.");
+if (!salesReply?.reply || /sou (?:a |o )?assistente virtual/i.test(salesReply.reply)) {
+  throw new Error("AI should continue qualification without repeating a virtual-assistant introduction.");
 }
 if (salesReply.serviceInterest !== "eurocamp" || salesReply.athleteAge !== 15) {
   throw new Error(`AI primary qualification failed: ${JSON.stringify(salesReply)}`);
@@ -52,6 +52,18 @@ if (isAiLeadQualifiedForMeeting(blockedMinor)) {
   throw new Error("A minor athlete without a responsible adult was incorrectly released for scheduling.");
 }
 
+const adultAthlete = {
+  ...qualifiedReply,
+  athleteAge: 20,
+  serviceInterest: "plano_internacional",
+  speakerRole: "atleta",
+  guardianConfirmed: false,
+  decisionMakerConfirmed: true,
+};
+if (!isAiLeadQualifiedForMeeting(adultAthlete)) {
+  throw new Error("An adult athlete was incorrectly blocked from scheduling without a responsible adult.");
+}
+
 const selectedEricAudio = selectEricAudioPathForAiReply({
   ...salesReply,
   athleteAge: 15,
@@ -61,7 +73,7 @@ const selectedEricAudio = selectEricAudioPathForAiReply({
   qualificationStatus: "more_info",
   ericAudioRecommended: true,
 });
-if (selectedEricAudio !== "media/audio/ec10/14-17.ogg") {
+if (selectedEricAudio !== "media/audio/ec10/eric-2026-09-14/04_14-19_apresentacao.ogg") {
   throw new Error(`Unexpected Eric audio selection: ${selectedEricAudio}`);
 }
 

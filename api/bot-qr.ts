@@ -1,6 +1,21 @@
 import { pool } from "./_db.js";
 
+const oracleBaseUrl = process.env.BOT_ORACLE_BASE_URL ?? "http://147.15.27.235:3001";
 const qrStaleAfterMs = Number(process.env.BOT_QR_STALE_SECONDS ?? 600) * 1000;
+const mainBotInstanceId = "main";
+
+function normalizeInstanceId(input: unknown) {
+  const value = String(input ?? mainBotInstanceId)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return value || mainBotInstanceId;
+}
+
+function runtimeKey(baseKey: string, instanceId: string) {
+  return instanceId === mainBotInstanceId ? baseKey : `${baseKey}:${instanceId}`;
+}
 
 function isFresh(updatedAt: unknown) {
   if (!updatedAt) return false;
@@ -8,12 +23,26 @@ function isFresh(updatedAt: unknown) {
   return Number.isFinite(timestamp) && Date.now() - timestamp <= qrStaleAfterMs;
 }
 
-async function fetchRuntimeStatus() {
+async function fetchOracleQr() {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3000);
+  try {
+    return await fetch(`${oracleBaseUrl}/qr.png`, {
+      cache: "no-store",
+      signal: controller.signal
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchRuntimeStatus(instanceId: string) {
   if (!process.env.SUPABASE_DB_URL) return null;
 
   try {
     const { rows } = await pool.query(
-      "select payload, updated_at from public.bot_runtime where key = 'bot_status' limit 1"
+      "select payload, updated_at from public.bot_runtime where key = $1 limit 1",
+      [runtimeKey("bot_status", instanceId)]
     );
     return rows[0] ?? null;
   } catch {
@@ -21,12 +50,13 @@ async function fetchRuntimeStatus() {
   }
 }
 
-async function fetchRuntimeQr() {
+async function fetchRuntimeQr(instanceId: string) {
   if (!process.env.SUPABASE_DB_URL) return null;
 
   try {
     const { rows } = await pool.query(
-      "select payload, updated_at from public.bot_runtime where key = 'whatsapp_qr' limit 1"
+      "select payload, updated_at from public.bot_runtime where key = $1 limit 1",
+      [runtimeKey("whatsapp_qr", instanceId)]
     );
     const row = rows[0];
     if (!isFresh(row?.payload?.updatedAt ?? row?.updated_at)) return null;
@@ -41,14 +71,29 @@ async function fetchRuntimeQr() {
   }
 }
 
-export default async function handler(_request: unknown, response: any) {
-  const runtimeStatus = await fetchRuntimeStatus();
+export default async function handler(request: any, response: any) {
+  const instanceId = normalizeInstanceId(request?.query?.instanceId);
+  const runtimeStatus = await fetchRuntimeStatus(instanceId);
   if (runtimeStatus && isFresh(runtimeStatus.payload?.updatedAt ?? runtimeStatus.updated_at) && runtimeStatus.payload?.status === "ready") {
     response.status(404).json({ error: "QR not required while bot is connected" });
     return;
   }
 
-  const runtimeQr = await fetchRuntimeQr();
+  if (instanceId === mainBotInstanceId) {
+    try {
+      const upstream = await fetchOracleQr();
+      if (upstream.ok) {
+        response.setHeader("cache-control", "no-store");
+        response.setHeader("content-type", upstream.headers.get("content-type") || "image/png");
+        response.status(200).send(Buffer.from(await upstream.arrayBuffer()));
+        return;
+      }
+    } catch {
+      // Fall back to the most recent database snapshot.
+    }
+  }
+
+  const runtimeQr = await fetchRuntimeQr(instanceId);
   if (runtimeQr) {
     response.setHeader("cache-control", "no-store");
     response.setHeader("content-type", "image/png");

@@ -6,8 +6,24 @@
   "framework": "vite",
   "rewrites": [
     {
+      "source": "/api/me",
+      "destination": "/api/auth?mode=me"
+    },
+    {
+      "source": "/api/booking-calendar",
+      "destination": "/api/booking?mode=calendar"
+    },
+    {
       "source": "/api/(.*)",
       "destination": "/api/$1"
+    },
+    {
+      "source": "/x1",
+      "destination": "/api/create-client?public=x1"
+    },
+    {
+      "source": "/sudamerica-x1",
+      "destination": "/api/create-client?public=sudamerica-x1"
     },
     {
       "source": "/(.*)",

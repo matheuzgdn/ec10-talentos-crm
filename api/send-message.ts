@@ -20,8 +20,14 @@ export default async function handler(request: any, response: any) {
       await client.query("begin");
 
       const clientResult = await client.query(
-        "select id, phone from public.clients where id = $1 for update",
-        [clientId]
+        `
+          select id, phone, bot_instance_id
+          from public.clients
+          where id = $1
+            and ($2::boolean or assigned_seller_id = $3)
+          for update
+        `,
+        [clientId, seller.role === "admin", seller.id]
       );
 
       if (!clientResult.rowCount) {
@@ -31,6 +37,7 @@ export default async function handler(request: any, response: any) {
       }
 
       const phone = String(clientResult.rows[0].phone ?? "").trim();
+      const botInstanceId = String(clientResult.rows[0].bot_instance_id ?? "main");
       if (!phone) {
         response.status(400).json({ error: "Este lead nao tem identificador de WhatsApp valido para envio." });
         await client.query("rollback");
@@ -38,32 +45,26 @@ export default async function handler(request: any, response: any) {
       }
       const outbound = await client.query(
         `
-          insert into public.outbound_messages (client_id, phone, body, media_type, media_path, status)
-          values ($1, $2, $3, $4, $5, 'queued')
+          insert into public.outbound_messages (client_id, bot_instance_id, phone, body, media_type, media_path, status)
+          values ($1, $6, $2, $3, $4, $5, 'queued')
           returning id, created_at
         `,
-        [clientId, phone, body ?? null, mediaType, mediaPath]
-      );
-
-      await client.query(
-        `
-          insert into public.messages (client_id, direction, body, media_type, media_path, created_by)
-          values ($1, 'outbound', $2, $3, $4, $5)
-        `,
-        [clientId, body ?? null, mediaType, mediaPath, seller.authUserId]
+        [clientId, phone, body ?? null, mediaType, mediaPath, botInstanceId]
       );
 
       await client.query(
         `
           insert into public.traffic_events
-            (client_id, phone, event_type, channel, platform, metadata)
+            (client_id, bot_instance_id, phone, event_type, channel, platform, metadata)
           values
-            ($1, $2, 'seller_reply_sent', 'crm', 'whatsapp', $3::jsonb)
+            ($1, $2, $3, 'seller_reply_queued', 'crm', 'whatsapp', $4::jsonb)
         `,
         [
           clientId,
+          botInstanceId,
           phone,
           JSON.stringify({
+            botInstanceId,
             sellerId: seller.id,
             mediaType
           })

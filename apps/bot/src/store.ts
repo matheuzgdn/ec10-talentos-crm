@@ -1,5 +1,4 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import {campaignSdrSince,isNewCampaignLead} from './campaign-access.js';
 import { normalizePhone, type LeadStatus, type ServiceInterest } from "@crm/shared";
 import { Pool, type PoolClient } from "pg";
 import { randomUUID, randomBytes, createHash } from "node:crypto";
@@ -222,6 +221,28 @@ function getDatabase() {
   return pool;
 }
 
+export async function fetchEc10LearningBase() {
+  const database = getDatabase();
+  const supabase = getSupabase();
+  if (database) {
+    const owner = await database.query("select id from public.profiles where lower(email)=$1 and role='superadmin' and is_active=true limit 1", ['matheusgdn94@gmail.com']);
+    const id = owner.rows[0]?.id;
+    if (!id) throw new Error('EC10 learning owner unavailable');
+    const examples = await database.query("select * from public.bot_training_examples where reviewed_by=$1 and rating in ('approved','corrected') order by updated_at desc limit 1000", [id]);
+    const materials = await database.query("select title,summary,raw_content,analysis,status from public.bot_lab_materials where created_by=$1 and status='active' order by updated_at desc limit 100", [id]);
+    return { examples: examples.rows, materials: materials.rows };
+  }
+  if (!supabase) throw new Error('EC10 learning storage unavailable');
+  const owner = await supabase.schema('public').from('profiles').select('id').eq('email', 'matheusgdn94@gmail.com').eq('role', 'superadmin').eq('is_active', true).limit(1).single();
+  if (owner.error || !owner.data) throw new Error('EC10 learning owner unavailable');
+  const [examples, materials] = await Promise.all([
+    supabase.schema('public').from('bot_training_examples').select('*').eq('reviewed_by', owner.data.id).in('rating', ['approved','corrected']).order('updated_at', {ascending:false}).limit(1000),
+    supabase.schema('public').from('bot_lab_materials').select('title,summary,raw_content,analysis,status').eq('created_by', owner.data.id).eq('status','active').order('updated_at',{ascending:false}).limit(100),
+  ]);
+  if (examples.error || materials.error) throw new Error('EC10 learning read failed');
+  return { examples: examples.data || [], materials: materials.data || [] };
+}
+
 function phoneLookupCandidates(phone: string) {
   const candidates = new Set<string>();
   if (phone) candidates.add(phone);
@@ -240,26 +261,10 @@ function phoneLookupCandidates(phone: string) {
   return [...candidates];
 }
 
-async function testAllowedPhoneCandidates() {
-  const testPhones=config.BOT_TEST_ALLOWED_PHONES.split(',')
+function testAllowedPhoneCandidates() {
+  return [...new Set(config.BOT_TEST_ALLOWED_PHONES.split(',')
     .map(phone=>normalizePhone(phone.trim(),config.BOT_DEFAULT_COUNTRY_CODE))
-    .filter(Boolean).flatMap(phone=>phoneLookupCandidates(phone));
-  const since=campaignSdrSince();
-  if(!testPhones.length||!since)return [...new Set(testPhones)];
-  const supabase=getSupabase();
-  if(!supabase)throw new Error('Campaign access lookup unavailable; isolation preserved');
-  const campaignPhones:string[]=[];
-  for(let offset=0;offset<10000;offset+=500){
-    const {data,error}=await supabase.from('clients')
-      .select('phone,bot_instance_id,bot_paused,tags,traffic_source,attribution_metadata')
-      .eq('bot_instance_id',currentBotInstanceId()).eq('traffic_source','ec10_campaign_lp')
-      .eq('bot_paused',false).eq('attribution_metadata->>funnelKey','ec10_campaign_landing_pages')
-      .gte('attribution_metadata->>capturedAt',since).order('id').range(offset,offset+499);
-    if(error)throw error;
-    campaignPhones.push(...(data||[]).filter(c=>isNewCampaignLead(c,since)).flatMap(c=>phoneLookupCandidates(c.phone)));
-    if((data||[]).length<500)return [...new Set([...testPhones,...campaignPhones])];
-  }
-  throw new Error('Campaign access pagination limit reached; isolation preserved');
+    .filter(Boolean).flatMap(phone=>phoneLookupCandidates(phone)))];
 }
 
 function normalizeMessageDedupeBody(body?: string | null) {
@@ -1064,7 +1069,7 @@ export async function createBotBookingLink(input:{clientId:string;service:string
 }
 
 export async function fetchPendingWhatsAppPolls(limit = 200, clientId?: string): Promise<PendingWhatsAppPoll[]> {
-  const allowedPhones=await testAllowedPhoneCandidates();
+  const allowedPhones=testAllowedPhoneCandidates();
   const database = getDatabase();
   if (database) {
     const { rows } = await database.query<PendingWhatsAppPoll>(`
@@ -1119,7 +1124,7 @@ export async function fetchQueuedOutboundMessages(limit = 1): Promise<OutboundMe
   const database = getDatabase();
   if (!supabase && !database) return [];
   const allowedPrefixes = getOutboundAllowedPrefixes();
-  const allowedPhones=await testAllowedPhoneCandidates();
+  const allowedPhones=testAllowedPhoneCandidates();
   const botInstanceId = currentBotInstanceId();
 
   if (database) {
@@ -1619,6 +1624,8 @@ export async function fetchRecentClientMessages(clientId: string, limit = 12): P
 
 export async function updateClientAiProfile(input: {
   clientId: string;
+  responsibleName?: string | null;
+  athleteName?: string | null;
   serviceInterest?: ServiceInterest | null;
   athleteAge?: number | null;
   leadTemperature?: "frio" | "morno" | "quente";
@@ -1654,6 +1661,8 @@ export async function updateClientAiProfile(input: {
     input.qualificationStatus === "qualified" ? "ia_qualificado" : null,
   ].filter(Boolean) as string[];
   const aiContext = Object.fromEntries(Object.entries({
+    responsibleName: input.responsibleName || undefined,
+    athleteName: input.athleteName || undefined,
     speakerRole: input.speakerRole && input.speakerRole !== "unknown" ? input.speakerRole : undefined,
     guardianConfirmed: input.guardianConfirmed,
     qualificationStatus: input.qualificationStatus,
@@ -2272,7 +2281,6 @@ export async function hasRecentOutboundChatMessage(input: {
   mediaPath?: string | null;
   windowMinutes: number;
   botInstanceId?: string;
-  after?: string | null;
 }) {
   const supabase = getSupabase();
   const database = getDatabase();
@@ -2280,9 +2288,6 @@ export async function hasRecentOutboundChatMessage(input: {
   const body = input.body?.trim() || null;
   const mediaPath = input.mediaPath?.trim() || null;
   const botInstanceId = input.botInstanceId ?? currentBotInstanceId();
-  const windowStart = Date.now() - windowMinutes * 60_000;
-  const afterTime = input.after ? Date.parse(input.after) : Number.NaN;
-  const cutoff = new Date(Math.max(windowStart, Number.isFinite(afterTime) ? afterTime : windowStart)).toISOString();
   if (!supabase && !database) return false;
 
   if (database) {
@@ -2296,7 +2301,7 @@ export async function hasRecentOutboundChatMessage(input: {
             and direction = 'outbound'
             and media_type = $2
             and nullif(whatsapp_message_id, '') is not null
-            and created_at >= $5::timestamptz
+            and created_at >= now() - make_interval(mins => $5::int)
             and (
               ($3::text is not null and media_path = $3::text)
               or ($3::text is null and $4::text is not null and body = $4::text)
@@ -2304,7 +2309,7 @@ export async function hasRecentOutboundChatMessage(input: {
           limit 1
         ) as exists
       `,
-      [input.clientId, input.mediaType, mediaPath, body, cutoff, botInstanceId]
+      [input.clientId, input.mediaType, mediaPath, body, windowMinutes, botInstanceId]
     );
     return Boolean(rows[0]?.exists);
   }
@@ -2320,7 +2325,7 @@ export async function hasRecentOutboundChatMessage(input: {
     .eq("media_type", input.mediaType)
     .not("whatsapp_message_id", "is", null)
     .neq("whatsapp_message_id", "")
-    .gte("created_at", cutoff)
+    .gte("created_at", new Date(Date.now() - windowMinutes * 60_000).toISOString())
     .limit(1);
 
   if (mediaPath) {
@@ -2498,30 +2503,6 @@ export async function getBotConversationState(phoneInput: string): Promise<BotCo
 
   if (error) throw error;
   return (data?.[0] as BotConversationState | undefined) ?? null;
-}
-
-export async function fetchDueGustavoStates(limit = 20): Promise<BotConversationState[]> {
-  const database = getDatabase();
-  if (!database) {
-    const supabase = getSupabase();
-    if (!supabase) throw new Error("Gustavo requires durable database storage");
-    const {data,error} = await supabase.from('bot_conversation_states')
-      .select('id,client_id,phone,stage,role_answer,athlete_age,age_group,service_interest,lead_page_url,completed_at,metadata')
-      .eq('bot_instance_id',currentBotInstanceId()).contains('metadata',{gustavo:{pending:true}})
-      .lte('metadata->gustavo->>dueAt',new Date().toISOString()).limit(Math.min(50,Math.max(1,limit)));
-    if (error) throw new Error('gustavo_pending_query_failed');
-    return (data||[]) as BotConversationState[];
-  }
-  const { rows } = await database.query<BotConversationState>(`
-    select b.id,b.client_id,b.phone,b.stage,b.role_answer,b.athlete_age,b.age_group,
-      b.service_interest,b.lead_page_url,b.completed_at,b.metadata
-    from public.bot_conversation_states b join public.clients c on c.id=b.client_id
-    where b.bot_instance_id=$1 and c.bot_paused=false
-      and b.metadata->'gustavo'->>'pending'= 'true'
-      and b.metadata->'gustavo'->>'dueAt' <= $2
-    order by b.metadata->'gustavo'->>'dueAt' limit $3
-  `,[currentBotInstanceId(),new Date().toISOString(),Math.min(50,Math.max(1,limit))]);
-  return rows;
 }
 
 export async function fetchPendingCareerMeetingGroupStates(limit = 20): Promise<BotConversationState[]> {

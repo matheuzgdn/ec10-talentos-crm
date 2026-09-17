@@ -1,0 +1,17 @@
+{
+  "status": "running",
+  "topic": "Anderson SDR com descoberta natural antes da idade",
+  "hypothesis": "Responder à saudação, criar vínculo, entender o papel do contato e apresentar contexto antes da idade reduz sensação de formulário e aumenta a continuidade até uma reunião qualificada.",
+  "owner": "EC10 Talentos / operação comercial",
+  "nextReview": "2026-09-17",
+  "evidence": [
+    "Abertura automática de boas-vindas e pergunta imediata de idade removidas do modo principal de IA.",
+    "Nova sequência implementada: acolhimento, atleta ou responsável, familiaridade com a EC10, idade contextualizada, caminhos por faixa e participação familiar.",
+    "Prompt orientado pelo estilo conversado dos áudios do Eric e proibido de encadear perguntas diagnósticas rasas.",
+    "376 verificações de fluxo, 58 de execução, 17 de saudações e 414 verificações adversariais passaram sem envio de WhatsApp.",
+    "Contato de teste reiniciado com backup privado, card preservado e serviço do WhatsApp pronto."
+  ],
+  "decision": "Validar em conversa humana se cada pergunta nasce da resposta anterior e se o cliente percebe valor antes da próxima descoberta. Manter somente uma pergunta por mensagem, sem obrigar toda mensagem a terminar em pergunta.",
+  "result": "Implementação publicada em modo isolado; conversão comercial ainda não medida.",
+  "rollback": "Backup privado preservado e versão anterior permanece recuperável no histórico do projeto."
+}

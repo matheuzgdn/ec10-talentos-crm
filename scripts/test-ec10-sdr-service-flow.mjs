@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import {eligibleSdrOffers,menuChoice,decideEc10Sdr,sdrSafeAnswer,sanitizeSdrAiAnswer,explicitSdrBooking,SDR_VERSION} from '../apps/bot/dist/sdr-flow.js';
+import {eligibleSdrOffers,menuChoice,decideEc10Sdr,sdrSafeAnswer,sanitizeSdrAiAnswer,explicitSdrBooking,SDR_VERSION,sdrGreeting} from '../apps/bot/dist/sdr-flow.js';
 let checks=0;const check=v=>{assert.ok(v);checks++;};
+for(const body of ['Boa tarde tudo bem?','Olá, tudo bem?','Bom dia!','boa noite 😊','oi tudo certo com você?']) {
+  check(!!sdrGreeting(body));
+  for(const step of ['service','help','next','question']) {
+    const result=decideEc10Sdr({age:22,step,offerId:step==='service'?null:'international',body});
+    check(!result.answer&&!result.book&&!result.audio);check(result.step===step);check(!/entendi|ja anotei/i.test(result.reply));
+  }
+}
+for(const body of ['boa tarde quanto custa?','boa tarde tenho 14 anos','oi quero agendar','boa tarde cancele meu atendimento'])check(sdrGreeting(body)===null);
 for(const age of [8,13,14,17,18,19,20,25,26,40]) {
   const offers=eligibleSdrOffers(age);check(offers[0].id==='career');
   check(offers.some(o=>o.id==='kids')===(age<=13));

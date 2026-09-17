@@ -1,8 +1,7 @@
 import {getBotConversationState,getClientAutomationStateByPhone,saveBotConversationState,scheduleOutboundTextMessage} from '../apps/bot/dist/store.js';
 import {createClient} from '@supabase/supabase-js';
 import {config} from '../apps/bot/dist/config.js';
-const phone=String(process.argv[2] || process.env.EC10_TARGET_PHONE || '').replace(/\D/g, '');
-if (!phone) throw new Error('Informe o telefone como argumento ou EC10_TARGET_PHONE.');
+const phone='559294432962';
 const c=await getClientAutomationStateByPhone(phone);const state=await getBotConversationState(phone);
 if(!c||!state||c.bot_paused||state.completed_at||state.metadata?.meeting?.bookingId)throw new Error('Contact is missing, paused, or already booked; no changes made');
 const question=`Sua agenda EC10 foi simplificada: primeiro o dia, depois o horário, com o plano e os dados preenchidos. Falta só o nome completo ${state.athlete_age<18?'do responsável que participará':'de quem participará'} da reunião. Qual é o nome? A confirmação chegará neste WhatsApp.`;

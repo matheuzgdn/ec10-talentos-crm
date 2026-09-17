@@ -1,8 +1,10 @@
 import { ensureSeller, handleApiError, HttpError } from "./_auth.js";
 import { pool } from "./_db.js";
+import { sendMetaQualityEvent } from "./_meta.js";
 import {
   buildFallbackRecommendations,
   callBase44TrafficAgent,
+  callOllamaTrafficAgent,
   insertTrafficRecommendations,
   loadTrafficContext
 } from "./_traffic.js";
@@ -117,10 +119,12 @@ function buildDestination(serviceInterest: string, ageGroup: string, name: strin
   url.searchParams.set("utm_source", "meta");
   url.searchParams.set("utm_medium", "paid_social");
   url.searchParams.set("utm_campaign", name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, ""));
+  url.searchParams.set("utm_content", "{{ad.name}}");
+  url.searchParams.set("utm_term", "{{adset.name}}");
   url.searchParams.set("origem", "meta_ads");
   if (ageGroup && ageGroup !== "8-17") url.searchParams.set("faixa", ageGroup);
   url.hash = ageGroup === "18-plus" || serviceInterest === "plano_internacional" ? "plans" : "planos";
-  return url.toString();
+  return url.toString().replace(/%7B%7B/g, "{{").replace(/%7D%7D/g, "}}");
 }
 
 function buildCampaignDraft(input: {
@@ -139,6 +143,7 @@ function buildCampaignDraft(input: {
   const name = `EC10 | ${serviceLabel} | ${range.athleteAge} | ${locations[0]} | ${today}`;
   const destinationUrl = buildDestination(input.serviceInterest, input.ageGroup, name);
   const isInternational = input.serviceInterest === "plano_internacional" || input.ageGroup === "18-plus";
+  const pixelId = process.env.META_PIXEL_ID || "{{META_PIXEL_ID}}";
   const copyText = isInternational
     ? "Atleta com sonho internacional precisa de rota, avaliacao e plano real. Fale com a EC10."
     : "Seu filho joga futebol? A EC10 monta o plano de carreira para orientar evolucao, visibilidade e oportunidades.";
@@ -179,20 +184,21 @@ function buildCampaignDraft(input: {
       },
       adset: {
         name: `${name} | Publico principal`,
-        optimization_goal: "LANDING_PAGE_VIEWS",
+        optimization_goal: "OFFSITE_CONVERSIONS",
         billing_event: "IMPRESSIONS",
         bid_strategy: "LOWEST_COST_WITHOUT_CAP",
         daily_budget_cents: input.budgetDaily ? Math.round(input.budgetDaily * 100) : null,
         lifetime_budget_cents: input.budgetTotal ? Math.round(input.budgetTotal * 100) : null,
+        promoted_object: {
+          pixel_id: pixelId,
+          custom_event_type: "LEAD"
+        },
         targeting: {
           geo_locations: { countries: ["BR"] },
           age_min: range.ageMin,
           age_max: range.ageMax,
-          interests,
           publisher_platforms: ["facebook", "instagram"],
-          facebook_positions: ["feed"],
-          instagram_positions: ["stream", "story", "reels"],
-          targeting_automation: { advantage_audience: 0 }
+          targeting_automation: { advantage_audience: 1 }
         }
       },
       ad: {
@@ -203,7 +209,9 @@ function buildCampaignDraft(input: {
       },
       safety: {
         publish_requires_manual_approval: true,
-        created_as: "crm_draft_only"
+        created_as: "crm_draft_only",
+        qualified_signal_required: ["Lead", "QualifiedLead", "Schedule", "Purchase"],
+        do_not_use_legacy_saved_audiences: true
       }
     }
   };
@@ -244,12 +252,22 @@ async function createRecommendations(request: any, response: any) {
   const context = await loadTrafficContext(periodDays);
 
   let usedAgent = false;
+  let usedProvider = "local";
   let recommendations = null;
 
-  if (provider === "base44") {
+  if (provider === "ollama") {
+    try {
+      recommendations = await callOllamaTrafficAgent(context);
+      usedAgent = Boolean(recommendations?.length);
+      if (usedAgent) usedProvider = "ollama";
+    } catch {
+      recommendations = null;
+    }
+  } else if (provider === "base44") {
     try {
       recommendations = await callBase44TrafficAgent(context);
       usedAgent = Boolean(recommendations?.length);
+      if (usedAgent) usedProvider = "base44";
     } catch {
       recommendations = null;
     }
@@ -265,7 +283,7 @@ async function createRecommendations(request: any, response: any) {
   }
 
   const inserted = await insertTrafficRecommendations(pool, seller.id, finalRecommendations);
-  response.status(200).json({ recommendations: inserted, usedAgent, provider: usedAgent ? "base44" : "local" });
+  response.status(200).json({ recommendations: inserted, usedAgent, provider: usedProvider });
 }
 
 async function createDraft(request: any, response: any) {
@@ -353,14 +371,17 @@ function cents(value: unknown) {
 }
 
 function buildTargeting(draft: any) {
+  const storedTargeting = draft?.meta_payload?.adset?.targeting;
+  if (storedTargeting && typeof storedTargeting === "object" && !Array.isArray(storedTargeting)) {
+    return storedTargeting;
+  }
+
   return {
     geo_locations: { countries: ["BR"] },
     age_min: Number(draft.age_min ?? 28),
     age_max: Number(draft.age_max ?? 56),
     publisher_platforms: ["facebook", "instagram"],
-    facebook_positions: ["feed"],
-    instagram_positions: ["stream", "story", "reels"],
-    targeting_automation: { advantage_audience: 0 }
+    targeting_automation: { advantage_audience: 1 }
   };
 }
 
@@ -390,9 +411,14 @@ async function publishDraft(request: any, response: any) {
   const accessToken = process.env.META_SYSTEM_USER_ACCESS_TOKEN;
   const adAccount = normalizeAdAccount(process.env.META_AD_ACCOUNT_ID ?? "");
   const pageId = process.env.META_PAGE_ID ?? "";
+  const pixelId = process.env.META_PIXEL_ID ?? "";
   const graphVersion = process.env.META_GRAPH_VERSION ?? "v25.0";
   if (!accessToken || !adAccount || !pageId) {
     response.status(400).json({ error: "Configure META_SYSTEM_USER_ACCESS_TOKEN, META_AD_ACCOUNT_ID e META_PAGE_ID." });
+    return;
+  }
+  if (!pixelId) {
+    response.status(400).json({ error: "Configure META_PIXEL_ID antes de publicar rascunhos de trafego qualificado." });
     return;
   }
 
@@ -459,8 +485,12 @@ async function publishDraft(request: any, response: any) {
       name: `${draft.name} | Publico principal`,
       campaign_id: campaignId,
       billing_event: "IMPRESSIONS",
-      optimization_goal: "LANDING_PAGE_VIEWS",
+      optimization_goal: "OFFSITE_CONVERSIONS",
       bid_strategy: "LOWEST_COST_WITHOUT_CAP",
+      promoted_object: {
+        pixel_id: pixelId,
+        custom_event_type: "LEAD"
+      },
       targeting: buildTargeting(draft),
       status: "PAUSED"
     };
@@ -587,6 +617,46 @@ async function fetchMetaInsights(accountId: string, accessToken: string, graphVe
   return rows;
 }
 
+async function fetchMetaCampaignStatuses(accountId: string, accessToken: string, graphVersion: string) {
+  const fields = [
+    "id",
+    "name",
+    "status",
+    "effective_status",
+    "configured_status",
+    "objective",
+    "daily_budget",
+    "lifetime_budget",
+    "start_time",
+    "stop_time",
+    "updated_time"
+  ].join(",");
+
+  let nextUrl: string | null = `https://graph.facebook.com/${graphVersion}/${accountId}/campaigns?${new URLSearchParams({
+    access_token: accessToken,
+    fields,
+    limit: "200"
+  }).toString()}`;
+  const campaigns = new Map<string, any>();
+
+  while (nextUrl) {
+    const metaResponse = await fetch(nextUrl, { signal: AbortSignal.timeout(30000) });
+    const payload = await metaResponse.json().catch(async () => ({ message: await metaResponse.text() }));
+
+    if (!metaResponse.ok) {
+      throw new Error(normalizeMetaError(payload));
+    }
+
+    for (const item of payload.data ?? []) {
+      if (item?.id) campaigns.set(String(item.id), item);
+    }
+
+    nextUrl = payload.paging?.next ?? null;
+  }
+
+  return campaigns;
+}
+
 function metaErrorMessage(payload: any) {
   const message = String(payload?.error?.message ?? payload?.message ?? "");
   if (!message) return null;
@@ -624,9 +694,68 @@ async function checkMetaEndpoint(name: string, url: string, accessToken: string)
   }
 }
 
-async function metaStatus(request: any, response: any) {
-  await ensureSeller(request, { requireActive: true, requireAdmin: true });
+function landingScriptUrls(html: string, landingUrl: string) {
+  const matches = Array.from(html.matchAll(/<script[^>]+src=["']([^"']+)["'][^>]*>/gi));
+  const urls: string[] = [];
 
+  for (const match of matches) {
+    const raw = match[1];
+    if (!raw) continue;
+
+    try {
+      const url = new URL(raw, landingUrl);
+      if (url.origin === new URL(landingUrl).origin) urls.push(url.toString());
+    } catch {
+      continue;
+    }
+  }
+
+  return Array.from(new Set(urls)).slice(0, 5);
+}
+
+async function checkLandingPixel(pixelId: string) {
+  const landingUrl = process.env.EC10_TRAFFIC_LANDING_URL ?? "https://ec10talentos.com/instagram";
+
+  try {
+    const siteResponse = await fetch(landingUrl, { signal: AbortSignal.timeout(20000) });
+    const html = await siteResponse.text().catch(() => "");
+    let hasPixel = Boolean(pixelId && html.includes(pixelId));
+    let hasFbq = /fbq\s*\(/i.test(html);
+
+    if ((!hasPixel || !hasFbq) && siteResponse.ok) {
+      for (const scriptUrl of landingScriptUrls(html, landingUrl)) {
+        const scriptResponse = await fetch(scriptUrl, { signal: AbortSignal.timeout(20000) });
+        if (!scriptResponse.ok) continue;
+        const script = await scriptResponse.text().catch(() => "");
+        hasPixel = hasPixel || Boolean(pixelId && script.includes(pixelId));
+        hasFbq = hasFbq || /fbq\s*\(/i.test(script);
+        if (hasPixel && hasFbq) break;
+      }
+    }
+
+    return {
+      name: "landing_pixel",
+      ok: siteResponse.ok && hasPixel && hasFbq,
+      status: siteResponse.status,
+      code: null,
+      type: null,
+      message: siteResponse.ok && hasPixel && hasFbq
+        ? null
+        : "A landing /instagram nao retornou o Pixel Meta esperado no HTML."
+    };
+  } catch (error) {
+    return {
+      name: "landing_pixel",
+      ok: false,
+      status: 0,
+      code: null,
+      type: null,
+      message: error instanceof Error ? error.message : "Falha ao verificar pixel na landing."
+    };
+  }
+}
+
+async function buildMetaStatusPayload() {
   const accessToken = process.env.META_SYSTEM_USER_ACCESS_TOKEN;
   const adAccount = normalizeAdAccount(process.env.META_AD_ACCOUNT_ID ?? "");
   const graphVersion = process.env.META_GRAPH_VERSION ?? "v25.0";
@@ -673,11 +802,23 @@ async function metaStatus(request: any, response: any) {
       `https://graph.facebook.com/${graphVersion}/${pixelId}?fields=id,name`,
       accessToken
     ));
+    checks.push(await checkLandingPixel(pixelId));
   }
+
+  checks.push({
+    name: "crm_capi",
+    ok: Boolean(pixelId && capiToken),
+    status: pixelId && capiToken ? 200 : 0,
+    code: null,
+    type: null,
+    message: pixelId && capiToken ? null : "Conversions API sem META_PIXEL_ID ou META_CAPI_ACCESS_TOKEN."
+  });
 
   const adAccountCheck = checks.find((item) => item.name === "ad_account");
   const insightsCheck = checks.find((item) => item.name === "insights");
   const pixelCheck = checks.find((item) => item.name === "pixel");
+  const landingPixelCheck = checks.find((item) => item.name === "landing_pixel");
+  const capiCheck = checks.find((item) => item.name === "crm_capi");
 
   if (adAccountCheck && !adAccountCheck.ok) {
     requiredActions.push("No Meta Business, conceda ao usuario do sistema acesso a conta de anuncios com ads_read e ads_management.");
@@ -685,8 +826,14 @@ async function metaStatus(request: any, response: any) {
   if (insightsCheck && !insightsCheck.ok) {
     requiredActions.push("Depois da permissao da conta de anuncios, rode novamente a sincronizacao de metricas.");
   }
+  if (landingPixelCheck && !landingPixelCheck.ok) {
+    requiredActions.push("Conferir o Pixel Meta publicado na landing /instagram.");
+  }
+  if (capiCheck && !capiCheck.ok) {
+    requiredActions.push("Configurar a Conversions API para enviar Lead, QualifiedLead, Schedule e Purchase pelo CRM.");
+  }
 
-  response.status(200).json({
+  return {
     graphVersion,
     configured: {
       adAccount: Boolean(adAccount),
@@ -695,15 +842,18 @@ async function metaStatus(request: any, response: any) {
       capi: Boolean(capiToken)
     },
     readyForInsights: Boolean(adAccountCheck?.ok && insightsCheck?.ok),
-    readyForQualityEvents: Boolean(pixelId && capiToken && (pixelCheck?.ok ?? true)),
+    readyForQualityEvents: Boolean(pixelId && capiToken && (pixelCheck?.ok ?? true) && (landingPixelCheck?.ok ?? true)),
     checks,
     requiredActions: Array.from(new Set(requiredActions))
-  });
+  };
 }
 
-async function syncMeta(request: any, response: any) {
+async function metaStatus(request: any, response: any) {
   await ensureSeller(request, { requireActive: true, requireAdmin: true });
+  response.status(200).json(await buildMetaStatusPayload());
+}
 
+async function syncMetaData(daysInput = 30) {
   const accessToken = process.env.META_SYSTEM_USER_ACCESS_TOKEN;
   const adAccount = normalizeAdAccount(process.env.META_AD_ACCOUNT_ID ?? "");
   const graphVersion = process.env.META_GRAPH_VERSION ?? "v25.0";
@@ -713,10 +863,14 @@ async function syncMeta(request: any, response: any) {
 
   const until = new Date().toISOString().slice(0, 10);
   const sinceDate = new Date();
-  sinceDate.setDate(sinceDate.getDate() - Number(request.body?.days ?? 30));
+  sinceDate.setDate(sinceDate.getDate() - Number(daysInput ?? 30));
   const since = sinceDate.toISOString().slice(0, 10);
 
-  const insights = await fetchMetaInsights(adAccount, accessToken, graphVersion, since, until);
+  const [insights, campaignStatuses] = await Promise.all([
+    fetchMetaInsights(adAccount, accessToken, graphVersion, since, until),
+    fetchMetaCampaignStatuses(adAccount, accessToken, graphVersion)
+  ]);
+  const insightCampaignIds = new Set(insights.map((item) => String(item.campaign_id ?? "")).filter(Boolean));
   const client = await pool.connect();
   try {
     await client.query("begin");
@@ -731,6 +885,7 @@ async function syncMeta(request: any, response: any) {
     );
 
     for (const item of insights) {
+      const campaignStatus = campaignStatuses.get(String(item.campaign_id ?? ""));
       const actions = item.actions ?? [];
       const conversations = actionValue(actions, [
         "onsite_conversion.messaging_conversation_started_7d",
@@ -740,6 +895,16 @@ async function syncMeta(request: any, response: any) {
         "lead",
         "onsite_conversion.lead_grouped",
         "offsite_conversion.fb_pixel_lead"
+      ]);
+      const qualifiedLeads = actionValue(actions, [
+        "qualified_lead",
+        "onsite_conversion.qualified_lead",
+        "offsite_conversion.fb_pixel_qualified_lead"
+      ]);
+      const proposals = actionValue(actions, [
+        "schedule",
+        "onsite_conversion.schedule",
+        "offsite_conversion.fb_pixel_schedule"
       ]);
       const purchases = actionValue(actions, [
         "purchase",
@@ -751,13 +916,16 @@ async function syncMeta(request: any, response: any) {
           insert into public.traffic_campaign_snapshots
             (platform, account_id, campaign_id, campaign_name, adset_id, adset_name,
              ad_id, ad_name, status, date_start, date_end, spend, impressions, reach,
-             clicks, conversations, leads, purchases, ctr, cpc, cpl, raw_payload)
+             clicks, conversations, leads, qualified_leads, proposals, purchases,
+             ctr, cpc, cpl, cpql, raw_payload)
           values
-            ('meta_ads', $1, $2, $3, $4, $5, $6, $7, null, $8::date, $9::date,
-             $10::numeric, $11::integer, $12::integer, $13::integer, $14::integer,
-             $15::integer, $16::integer, $17::numeric, $18::numeric,
-             case when $15::integer > 0 then $10::numeric / $15::numeric else 0 end,
-             $19::jsonb)
+            ('meta_ads', $1, $2, $3, $4, $5, $6, $7, $8, $9::date, $10::date,
+             $11::numeric, $12::integer, $13::integer, $14::integer, $15::integer,
+             $16::integer, $17::integer, $18::integer, $19::integer,
+             $20::numeric, $21::numeric,
+             case when $16::integer > 0 then $11::numeric / $16::numeric else 0 end,
+             case when $17::integer > 0 then $11::numeric / $17::numeric else 0 end,
+             $22::jsonb)
         `,
         [
           adAccount,
@@ -767,6 +935,7 @@ async function syncMeta(request: any, response: any) {
           item.adset_name ?? null,
           item.ad_id ?? null,
           item.ad_name ?? null,
+          campaignStatus?.effective_status ?? campaignStatus?.status ?? null,
           item.date_start,
           item.date_stop,
           asNumber(item.spend),
@@ -775,10 +944,37 @@ async function syncMeta(request: any, response: any) {
           Math.round(asNumber(item.clicks)),
           Math.round(conversations),
           Math.round(leads),
+          Math.round(qualifiedLeads),
+          Math.round(proposals),
           Math.round(purchases),
           asNumber(item.ctr),
           asNumber(item.cpc),
           JSON.stringify(item)
+        ]
+      );
+    }
+
+    for (const [campaignId, campaign] of campaignStatuses.entries()) {
+      const status = String(campaign.effective_status ?? campaign.status ?? "");
+      if (insightCampaignIds.has(campaignId) || status !== "ACTIVE") continue;
+
+      await client.query(
+        `
+          insert into public.traffic_campaign_snapshots
+            (platform, account_id, campaign_id, campaign_name, status, date_start, date_end,
+             spend, impressions, reach, clicks, conversations, leads, qualified_leads,
+             proposals, purchases, ctr, cpc, cpl, cpql, raw_payload)
+          values
+            ('meta_ads', $1, $2, $3, $4, $5::date, $5::date,
+             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, $6::jsonb)
+        `,
+        [
+          adAccount,
+          campaignId,
+          campaign.name ?? null,
+          status,
+          until,
+          JSON.stringify({ metaCampaignStatus: campaign, noInsightsInRange: true })
         ]
       );
     }
@@ -791,7 +987,432 @@ async function syncMeta(request: any, response: any) {
     client.release();
   }
 
-  response.status(200).json({ synced: true, rows: insights.length, since, until });
+  return { synced: true, rows: insights.length, since, until };
+}
+
+async function syncMeta(request: any, response: any) {
+  await ensureSeller(request, { requireActive: true, requireAdmin: true });
+  response.status(200).json(await syncMetaData(Number(request.body?.days ?? 30)));
+}
+
+function requestHeader(request: any, name: string) {
+  return String(request.headers?.[name.toLowerCase()] ?? request.headers?.[name] ?? "");
+}
+
+function isTrafficCronAuthorized(request: any) {
+  const secret = process.env.TRAFFIC_CRON_SECRET || process.env.CRON_SECRET || "";
+  const authorization = requestHeader(request, "authorization");
+  if (secret) return authorization === `Bearer ${secret}`;
+
+  const userAgent = requestHeader(request, "user-agent").toLowerCase();
+  const schedule = requestHeader(request, "x-vercel-cron-schedule");
+  return userAgent.includes("vercel-cron/1.0") && Boolean(schedule);
+}
+
+async function findAutomationSellerId() {
+  const { rows } = await pool.query(
+    `
+      select id
+      from public.sellers
+      where active = true and role = 'admin'
+      order by approved_at desc nulls last, created_at asc
+      limit 1
+    `
+  );
+  return rows[0]?.id ?? null;
+}
+
+function safeMetadata(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function scheduleSignalEventSourceUrl(row: any) {
+  const metadata = safeMetadata(row.attribution_metadata);
+  const direct = typeof metadata.eventSourceUrl === "string" ? metadata.eventSourceUrl : null;
+  const sourcePath = typeof metadata.sourcePath === "string" ? metadata.sourcePath : null;
+  try {
+    return new URL(direct || sourcePath || "/instagram", "https://ec10talentos.com").toString();
+  } catch {
+    return "https://ec10talentos.com/instagram";
+  }
+}
+
+function isMetaEventRecent(input: unknown) {
+  const occurredAt = new Date(String(input ?? ""));
+  return Number.isFinite(occurredAt.getTime())
+    && Date.now() - occurredAt.getTime() <= 7 * 24 * 60 * 60 * 1000;
+}
+
+async function backfillSchedulingIntentSignals() {
+  const { rows } = await pool.query(
+    `
+      with requested as (
+        select distinct on (e.client_id)
+          e.id::text as source_event_id,
+          e.client_id,
+          e.phone,
+          coalesce(e.service_interest, c.service_interest) as service_interest,
+          e.athlete_age,
+          e.age_group,
+          e.quality_score,
+          e.occurred_at,
+          c.lead_score,
+          c.fbclid,
+          c.attribution_metadata,
+          format('crm-%s-meeting-intent', e.client_id) as event_id,
+          'bot_meeting_requested_auto_audit' as source
+        from public.traffic_events e
+        join public.clients c on c.id = e.client_id
+        where e.event_type = 'bot_meeting_requested'
+          and e.occurred_at >= now() - interval '30 days'
+        order by e.client_id, e.occurred_at asc
+      ), active_states as (
+        select distinct on (c.id)
+          null::text as source_event_id,
+          c.id as client_id,
+          c.phone,
+          c.service_interest,
+          b.athlete_age,
+          b.age_group,
+          null::numeric as quality_score,
+          coalesce(b.updated_at, c.updated_at, c.created_at) as occurred_at,
+          c.lead_score,
+          c.fbclid,
+          c.attribution_metadata,
+          format('crm-%s-meeting-intent', c.id) as event_id,
+          'active_scheduling_state_auto_audit' as source
+        from public.bot_conversation_states b
+        join public.clients c on c.phone = b.phone
+        where b.stage in ('awaiting_meeting_date', 'awaiting_meeting_time')
+          and coalesce(b.updated_at, c.updated_at, c.created_at) >= now() - interval '30 days'
+        order by c.id, coalesce(b.updated_at, c.updated_at, c.created_at) desc
+      ), candidates as (
+        select * from requested
+        union all
+        select * from active_states
+      )
+      select distinct on (client_id) *
+      from candidates candidate
+      where not exists (
+        select 1
+        from public.traffic_events q
+        where q.client_id = candidate.client_id
+          and q.event_type = 'QualifiedLead'
+          and q.metadata ->> 'eventId' = candidate.event_id
+      )
+      order by client_id, occurred_at asc
+    `
+  );
+
+  let inserted = 0;
+  let capiSent = 0;
+  let capiSkippedOld = 0;
+  let capiFailed = 0;
+
+  for (const row of rows) {
+    const recent = isMetaEventRecent(row.occurred_at);
+    let sent = false;
+    if (recent) {
+      sent = await sendMetaQualityEvent({
+        clientId: row.client_id,
+        phone: row.phone,
+        eventName: "QualifiedLead",
+        status: "quente",
+        serviceInterest: row.service_interest,
+        leadScore: Math.max(85, Number(row.lead_score ?? row.quality_score ?? 0)),
+        fbclid: row.fbclid ?? null,
+        fbc: typeof safeMetadata(row.attribution_metadata).fbc === "string" ? String(safeMetadata(row.attribution_metadata).fbc) : null,
+        fbp: typeof safeMetadata(row.attribution_metadata).fbp === "string" ? String(safeMetadata(row.attribution_metadata).fbp) : null,
+        eventSourceUrl: scheduleSignalEventSourceUrl(row),
+        eventTime: row.occurred_at,
+        eventId: row.event_id
+      });
+      if (sent) capiSent += 1;
+      else capiFailed += 1;
+    } else {
+      capiSkippedOld += 1;
+    }
+
+    await pool.query(
+      `
+        insert into public.traffic_events
+          (client_id, phone, event_type, channel, platform, service_interest,
+           athlete_age, age_group, lead_status, quality_score, metadata, occurred_at)
+        values
+          ($1, $2, 'QualifiedLead', 'whatsapp', 'meta_ads', $3, $4, $5, 'quente', $6, $7::jsonb, $8)
+      `,
+      [
+        row.client_id,
+        row.phone,
+        row.service_interest,
+        row.athlete_age,
+        row.age_group,
+        Math.max(85, Number(row.lead_score ?? row.quality_score ?? 0)),
+        JSON.stringify({
+          source: row.source,
+          sourceEventId: row.source_event_id,
+          eventId: row.event_id,
+          capiSent: sent,
+          capiSkippedOld: !recent
+        }),
+        row.occurred_at
+      ]
+    );
+    inserted += 1;
+  }
+
+  return { found: rows.length, inserted, capiSent, capiSkippedOld, capiFailed };
+}
+
+async function backfillScheduledMeetingSignals() {
+  const { rows } = await pool.query(
+    `
+      select
+        e.id,
+        e.client_id,
+        e.phone,
+        coalesce(e.service_interest, c.service_interest) as service_interest,
+        e.athlete_age,
+        e.age_group,
+        e.quality_score,
+        e.metadata,
+        e.occurred_at,
+        c.lead_score,
+        c.fbclid,
+        c.attribution_metadata,
+        format('crm-%s-schedule-%s', e.client_id, coalesce(e.metadata #>> '{schedule,startsAt}', e.occurred_at::text)) as event_id
+      from public.traffic_events e
+      join public.clients c on c.id = e.client_id
+      where e.event_type = 'bot_meeting_scheduled'
+        and e.occurred_at >= now() - interval '30 days'
+        and not exists (
+          select 1
+          from public.traffic_events s
+          where s.client_id = e.client_id
+            and s.event_type = 'Schedule'
+            and s.metadata ->> 'sourceEventId' = e.id::text
+        )
+      order by e.occurred_at asc
+    `
+  );
+
+  let inserted = 0;
+  let capiSent = 0;
+  let capiSkippedOld = 0;
+  let capiFailed = 0;
+
+  for (const row of rows) {
+    const recent = isMetaEventRecent(row.occurred_at);
+    let sent = false;
+    if (recent) {
+      sent = await sendMetaQualityEvent({
+        clientId: row.client_id,
+        phone: row.phone,
+        eventName: "Schedule",
+        status: "orcamento",
+        serviceInterest: row.service_interest,
+        leadScore: Math.max(90, Number(row.lead_score ?? row.quality_score ?? 0)),
+        fbclid: row.fbclid ?? null,
+        fbc: typeof safeMetadata(row.attribution_metadata).fbc === "string" ? String(safeMetadata(row.attribution_metadata).fbc) : null,
+        fbp: typeof safeMetadata(row.attribution_metadata).fbp === "string" ? String(safeMetadata(row.attribution_metadata).fbp) : null,
+        eventSourceUrl: scheduleSignalEventSourceUrl(row),
+        eventTime: row.occurred_at,
+        eventId: row.event_id
+      });
+      if (sent) capiSent += 1;
+      else capiFailed += 1;
+    } else {
+      capiSkippedOld += 1;
+    }
+
+    await pool.query(
+      `
+        insert into public.traffic_events
+          (client_id, phone, event_type, channel, platform, service_interest,
+           athlete_age, age_group, lead_status, quality_score, metadata, occurred_at)
+        values
+          ($1, $2, 'Schedule', 'whatsapp', 'meta_ads', $3, $4, $5, 'orcamento', $6, $7::jsonb, $8)
+      `,
+      [
+        row.client_id,
+        row.phone,
+        row.service_interest,
+        row.athlete_age,
+        row.age_group,
+        Math.max(90, Number(row.lead_score ?? row.quality_score ?? 0)),
+        JSON.stringify({
+          source: "bot_meeting_scheduled_auto_audit",
+          sourceEventId: row.id,
+          eventId: row.event_id,
+          capiSent: sent,
+          capiSkippedOld: !recent,
+          schedule: row.metadata?.schedule ?? null,
+          sellerName: row.metadata?.sellerName ?? null,
+          sellerRoute: row.metadata?.sellerRoute ?? null
+        }),
+        row.occurred_at
+      ]
+    );
+    inserted += 1;
+  }
+
+  return { found: rows.length, inserted, capiSent, capiSkippedOld, capiFailed };
+}
+
+async function runTrafficAutoAudit(input: { force?: boolean; periodDays?: number }) {
+  const force = Boolean(input.force);
+  const periodDays = Math.max(1, Math.min(60, Math.round(Number(input.periodDays ?? 30))));
+  const checkedAt = new Date().toISOString();
+
+  if (!force) {
+    const recent = await pool.query(
+      `
+        select occurred_at
+        from public.traffic_events
+        where event_type = 'traffic_auto_audit_run'
+          and occurred_at >= now() - interval '5 hours'
+        order by occurred_at desc
+        limit 1
+      `
+    );
+    const lastRunAt = recent.rows[0]?.occurred_at ? new Date(recent.rows[0].occurred_at).toISOString() : null;
+    if (lastRunAt) {
+      return {
+        ok: true,
+        ran: false,
+        reason: "Auditoria ja executada nas ultimas 5 horas.",
+        checkedAt,
+        lastRunAt,
+        nextRunAt: new Date(new Date(lastRunAt).getTime() + 5 * 60 * 60 * 1000).toISOString()
+      };
+    }
+  }
+
+  const meta = await buildMetaStatusPayload();
+  let sync: null | { synced: boolean; rows: number; since: string; until: string } = null;
+  let syncError: string | null = null;
+
+  if (meta.readyForInsights) {
+    try {
+      sync = await syncMetaData(Math.min(14, periodDays));
+    } catch (error) {
+      syncError = error instanceof Error ? error.message : "Falha ao sincronizar Meta Ads.";
+    }
+  }
+
+  const schedulingIntentBackfill = await backfillSchedulingIntentSignals();
+  const scheduledMeetingBackfill = await backfillScheduledMeetingSignals();
+  const context = await loadTrafficContext(periodDays);
+  let recommendations = buildFallbackRecommendations(context);
+  let provider = "local";
+
+  const trafficAiProvider = String(process.env.TRAFFIC_AI_PROVIDER ?? "").toLowerCase();
+  if (trafficAiProvider === "ollama") {
+    try {
+      const agentRecommendations = await callOllamaTrafficAgent(context);
+      if (agentRecommendations.length) {
+        recommendations = agentRecommendations;
+        provider = "ollama";
+      }
+    } catch {
+      provider = "local";
+    }
+  } else if (trafficAiProvider === "base44") {
+    try {
+      const agentRecommendations = await callBase44TrafficAgent(context);
+      if (agentRecommendations.length) {
+        recommendations = agentRecommendations;
+        provider = "base44";
+      }
+    } catch {
+      provider = "local";
+    }
+  }
+
+  const existing = await pool.query(
+    `
+      select lower(title) as title
+      from public.traffic_agent_recommendations
+      where created_at >= now() - interval '24 hours'
+        and status in ('draft', 'pending_approval', 'approved')
+    `
+  );
+  const existingTitles = new Set(existing.rows.map((row) => String(row.title ?? "")));
+  const freshRecommendations = recommendations.filter((item) => !existingTitles.has(item.title.trim().toLowerCase()));
+  const sellerId = await findAutomationSellerId();
+  const inserted = freshRecommendations.length
+    ? await insertTrafficRecommendations(pool, sellerId, freshRecommendations)
+    : [];
+
+  const blockers = meta.requiredActions.length + (syncError ? 1 : 0);
+  const qualityScore = Math.max(0, Math.min(100, 100 - blockers * 15));
+  await pool.query(
+    `
+      insert into public.traffic_events
+        (event_type, channel, platform, quality_score, metadata)
+      values
+        ('traffic_auto_audit_run', 'crm', 'meta_ads', $1, $2::jsonb)
+    `,
+    [
+      qualityScore,
+      JSON.stringify({
+        checkedAt,
+        periodDays,
+        provider,
+        readyForInsights: meta.readyForInsights,
+        readyForQualityEvents: meta.readyForQualityEvents,
+        metaRequiredActions: meta.requiredActions,
+        sync,
+        syncError,
+        schedulingIntentBackfill,
+        scheduledMeetingBackfill,
+        recommendationsCreated: inserted.length,
+        attributionHealth: context.attributionHealth,
+        metrics: context.metrics
+      })
+    ]
+  );
+
+  return {
+    ok: blockers === 0,
+    ran: true,
+    checkedAt,
+    periodDays,
+    provider,
+    meta: {
+      readyForInsights: meta.readyForInsights,
+      readyForQualityEvents: meta.readyForQualityEvents,
+      requiredActions: meta.requiredActions,
+      checks: meta.checks.map((item) => ({
+        name: item.name,
+        ok: item.ok,
+        status: item.status,
+        message: item.message
+      }))
+    },
+    sync,
+    syncError,
+    schedulingIntentBackfill,
+    scheduledMeetingBackfill,
+    recommendationsCreated: inserted.length,
+    recommendationsSkippedAsDuplicate: recommendations.length - freshRecommendations.length,
+    nextRunAt: new Date(Date.now() + 5 * 60 * 60 * 1000).toISOString()
+  };
+}
+
+async function autoAudit(request: any, response: any) {
+  let admin = false;
+  try {
+    await ensureSeller(request, { requireActive: true, requireAdmin: true });
+    admin = true;
+  } catch (error) {
+    if (!isTrafficCronAuthorized(request)) throw error;
+  }
+
+  const force = admin && (request.query?.force === "1" || request.body?.force === true);
+  const periodDays = Number(request.query?.days ?? request.body?.days ?? 30);
+  response.setHeader("cache-control", "no-store");
+  response.status(200).json(await runTrafficAutoAudit({ force, periodDays }));
 }
 
 async function exportTrafficData(request: any, response: any) {
@@ -883,6 +1504,13 @@ export default async function handler(request: any, response: any) {
   const action = String(request.query?.action ?? "overview");
 
   try {
+    if (request.method === "GET" && action === "bh-prime") {
+      await ensureSeller(request, { requireActive: true, requireAdmin: true });
+      const { loadBhPrimeManager } = await import("./_bh-prime.js");
+      response.setHeader("cache-control", "no-store");
+      response.status(200).json(await loadBhPrimeManager());
+      return;
+    }
     if (request.method === "GET" && action === "overview") {
       await ensureSeller(request, { requireActive: true });
       const context = await loadTrafficContext(Number(request.query?.days ?? 30));
@@ -905,6 +1533,11 @@ export default async function handler(request: any, response: any) {
 
     if (request.method === "GET" && action === "meta-status") {
       await metaStatus(request, response);
+      return;
+    }
+
+    if ((request.method === "GET" || request.method === "POST") && action === "auto-audit") {
+      await autoAudit(request, response);
       return;
     }
 

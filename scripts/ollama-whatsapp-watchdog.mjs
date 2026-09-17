@@ -793,7 +793,7 @@ function wasRecentDate(value, minutes) {
 function runSelfTest() {
   const baseContact = {
     id: "00000000-0000-0000-0000-000000000001",
-    phone: "5511999999999",
+    phone: "5531991094742",
     status: "aguardando_cliente",
     botPaused: false,
     tags: [],

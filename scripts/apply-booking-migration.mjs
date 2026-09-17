@@ -13,7 +13,7 @@ try {
   await client.query("begin");
   await client.query(migration);
   await client.query("commit");
-  const { rows } = await client.query("select name, email, active from public.sellers order by name");
+  const { rows } = await client.query("select name, email, active from whatsapp_bot.sellers order by name");
   console.log(JSON.stringify({ migration: "applied", sellerNames: rows.map(row => row.name), pabloRegistered: rows.some(row => /pablo/i.test(row.name) && row.active) }));
 } catch (error) {
   try { await client.query("rollback"); } catch { /* Connection can fail before a transaction starts. */ }

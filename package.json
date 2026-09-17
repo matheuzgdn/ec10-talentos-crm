@@ -8,6 +8,7 @@
     "packages/*"
   ],
   "scripts": {
+    "postinstall": "node scripts/patch-whatsapp-web.cjs",
     "dev:painel": "vite apps/painel --host 0.0.0.0 --port 5173",
     "dev:bot": "npm --workspace @crm/bot run dev",
     "build": "npm --workspaces --if-present run build",

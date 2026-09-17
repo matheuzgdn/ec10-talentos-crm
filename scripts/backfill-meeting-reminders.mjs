@@ -4,10 +4,10 @@ import pg from "pg";
 const dbUrl = process.env.SUPABASE_DB_URL;
 if (!dbUrl) throw new Error("SUPABASE_DB_URL ausente.");
 
-const defaultInternationalSellerName = process.env.EC10_INTERNATIONAL_SELLER_NAME || process.env.EC10_SELLER_NAME || "EC10 Comercial";
-const defaultInternationalSellerPhone = process.env.EC10_INTERNATIONAL_SELLER_PHONE || process.env.EC10_SELLER_PHONE || "+55 31 9852-6146";
-const defaultCareerSellerName = process.env.EC10_CAREER_SELLER_NAME || "EC10 Comercial";
-const defaultCareerSellerPhone = process.env.EC10_CAREER_SELLER_PHONE || "+55 31 9852-6146";
+const defaultInternationalSellerName = process.env.EC10_INTERNATIONAL_SELLER_NAME || process.env.EC10_SELLER_NAME || "Igor Jardins";
+const defaultInternationalSellerPhone = process.env.EC10_INTERNATIONAL_SELLER_PHONE || process.env.EC10_SELLER_PHONE || "+55 31 8233-1411";
+const defaultCareerSellerName = process.env.EC10_CAREER_SELLER_NAME || "Sandro";
+const defaultCareerSellerPhone = process.env.EC10_CAREER_SELLER_PHONE || "+55 31 8876-4692";
 const meetUrl = process.env.EC10_GOOGLE_MEET_URL || null;
 const reminderLeadMinutes = Number(process.env.MEETING_REMINDER_LEAD_MINUTES || 10);
 
