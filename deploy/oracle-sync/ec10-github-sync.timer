@@ -1,0 +1,13 @@
+[Unit]
+Description=Verifica atualizacoes validadas do bot EC10 no GitHub
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+RandomizedDelaySec=15s
+Persistent=true
+Unit=ec10-github-sync.service
+
+[Install]
+WantedBy=timers.target
+

@@ -37,7 +37,7 @@ export function learningText(value) {
 }
 export function safeLearningReply(value) {
   const text = String(value || '').trim();
-  if (!text || text.length > 1800 || /https?:|www\.|(?:R\$|US\$|€)\s*\d|\b(?:garantimos|garantido)\b|senha|access.token|service.role/i.test(text)) return null;
+  if (!text || text.length > 1800 || /https?:|www\.|(?:R\$|US\$|€)\s*\d|\b(?:garantimos|garantido)\b|senha|access.token|service.role|```|api_call|update_qualification\s*\(/i.test(text)) return null;
   if (singleQuestionReply(text, {fallback:''}) !== text) return null;
   return text;
 }

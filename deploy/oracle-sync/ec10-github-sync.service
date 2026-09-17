@@ -1,0 +1,12 @@
+[Unit]
+Description=Atualiza o bot EC10 a partir da branch principal validada no GitHub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=opc
+WorkingDirectory=/home/opc
+ExecStart=/home/opc/ec10-github-sync/sync-main.sh
+TimeoutStartSec=25min
+

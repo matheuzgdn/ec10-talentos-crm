@@ -235,7 +235,7 @@ export function isPositiveInterest(input: string | null | undefined) {
   const text = normalizeText(input);
   const choiceText = stripLeadingChoiceNumber(text);
   if (choiceText !== text && choiceText && isPositiveInterest(choiceText)) return true;
-  return /^(1|01|sim|s|ok|okay|claro|positivo|fechado|beleza|blz)$/.test(text)
+  return /^(1|01|sim|s|ss|pode|pode sim|ok|okay|claro|positivo|fechado|beleza|blz)$/.test(text)
     || /(^|\b)(quero|quero sim|tenho interesse|interesse|saber mais|como funciona|me explica|explica melhor|qual valor|quanto custa|agendar|reuniao|marcar|pode ser|pode mandar|manda|manda ai|mande|vamos|bora|combinado)(\b|$)/.test(text);
 }
 
@@ -255,8 +255,8 @@ export function isYesNoPollReply(input: string | null | undefined) {
   const text = normalizeText(input);
   if (!text) return false;
   const choiceText = stripLeadingChoiceNumber(text);
-  if (/^(sim|s|nao|n)$/.test(text)) return true;
-  return choiceText !== text && /^(sim|s|nao|n)$/.test(choiceText);
+  if (/^(sim|s|ss|nao|n)$/.test(text)) return true;
+  return choiceText !== text && /^(sim|s|ss|nao|n)$/.test(choiceText);
 }
 
 export function isGuardianDenial(input: string | null | undefined) {
@@ -272,7 +272,7 @@ export function isGuardianConfirmation(input: string | null | undefined) {
   const text = normalizeText(input);
   const choiceText = stripLeadingChoiceNumber(text);
   if (choiceText !== text && choiceText && isGuardianConfirmation(choiceText)) return true;
-  return /^(1|01|sim|s)$/.test(text)
+  return /^(1|01|sim|s|ss)$/.test(text)
     || /\b(sou responsavel|sou o responsavel|sou a responsavel|responsavel legal|sou pai|sou o pai|sou mae|sou a mae|pai do atleta|mae do atleta|responsavel pelo atleta)\b/.test(text);
 }
 
