@@ -4065,7 +4065,7 @@ async function handleEc10AiConversation(
       clientId: clientState.id,
       stage: existingFlowState.stage,
     }));
-    aiReply = await generateEc10SalesReplyWithAi(aiRequest);
+    aiReply = await generateEc10SalesReplyWithAi({ ...aiRequest, qualityRetry: true });
   }
 
   if (!aiReply) {

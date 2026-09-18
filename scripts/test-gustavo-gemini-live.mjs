@@ -19,13 +19,15 @@ const turns = [
 ];
 
 for (const message of turns) {
-  const reply = await generateEc10SalesReplyWithAi({
+  const request = {
     message,
     athleteAge: knownAge,
     history,
     profile,
     learningStage: knownAge ? "awaiting_interest" : "awaiting_age",
-  });
+  };
+  let reply = await generateEc10SalesReplyWithAi(request);
+  if (!reply) reply = await generateEc10SalesReplyWithAi({...request, qualityRetry:true});
   assert.ok(reply?.reply, `Gemini não respondeu ao turno: ${message}`);
   assert.doesNotMatch(reply.reply.toLocaleLowerCase("pt-BR"), new RegExp(blocked));
   assert.doesNotMatch(reply.reply, unsafe);

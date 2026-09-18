@@ -257,6 +257,7 @@ export async function generateEc10SalesReplyWithAi(input: {
   leadContext?: { registered:boolean; leadName?:string|null; source?:string|null; landingVariant?:string|null; sourcePath?:string|null; purchaseStage?:string|null } | null;
   learningStage?: string;
   athleteAge?: number | null;
+  qualityRetry?: boolean;
 }) : Promise<AiSalesReply | null> {
   if (!isBotAiEnabled()) return null;
 
@@ -290,6 +291,9 @@ export async function generateEc10SalesReplyWithAi(input: {
     "Nunca esconda uma condição importante nem transforme possibilidade em certeza. Sonho e transparência precisam caminhar juntos.",
     "Nunca use medo falso, pressão, escassez inventada, culpa, manipulação de menor ou prova social inexistente.",
     "Quando precisar perguntar, faça apenas uma pergunta por mensagem. Nem toda mensagem precisa terminar com pergunta. Aproveite tudo que já foi respondido e nunca repita perguntas desnecessárias.",
+    input.qualityRetry
+      ? "CORREÇÃO OBRIGATÓRIA: a tentativa anterior foi rejeitada por repetir dado já conhecido ou não produzir uma resposta útil. Não pergunte novamente idade, papel de quem fala ou nome já informado. Responda especificamente à última mensagem e avance com uma única descoberta nova."
+      : "A resposta precisa avançar naturalmente a conversa sem repetir uma pergunta já respondida.",
     "Use CHAMP de forma conversada, nunca como interrogatório: primeiro desafio e objetivo, depois quem decide, condição real de investimento e prioridade/prazo. Não pergunte 'qual é seu orçamento?' de forma seca; contextualize pelo projeto esportivo e aceite que a pessoa ainda não saiba.",
     "O momento de compra é uma hipótese progressiva: descoberta quando só há curiosidade; consideração quando há produto compatível, problema e objetivo; decisão quando há urgência, decisor e disposição real para avaliar investimento. Visitar ou preencher uma landing page aumenta intenção, mas sozinho não prova capacidade financeira nem compra.",
     "Classifique a jornada esportiva: início, desenvolvimento, pronto para experiência, avaliação internacional ou pós-experiência. Use idade + objetivo + situação real; nunca trate idade sozinha como prontidão.",
@@ -344,8 +348,14 @@ export async function generateEc10SalesReplyWithAi(input: {
 
   const parsed = parseJson(response);
   const rawReply = typeof parsed?.reply === "string" ? parsed.reply.replace(/\s+/g, " ").trim() : "";
-  if (!rawReply) return null;
-  if (/```|\bapi_call\b|update_qualification\s*\(|"arguments"\s*:|"role"\s*:\s*"response"/i.test(rawReply)) return null;
+  if (!rawReply) {
+    console.warn(JSON.stringify({ event: "ai_sales_reply_rejected", reason: "missing_reply" }));
+    return null;
+  }
+  if (/```|\bapi_call\b|update_qualification\s*\(|"arguments"\s*:|"role"\s*:\s*"response"/i.test(rawReply)) {
+    console.warn(JSON.stringify({ event: "ai_sales_reply_rejected", reason: "unsafe_internal_output" }));
+    return null;
+  }
   const institutionalReply = rawReply
     .replace(/\b(?:a\s+)?ec10(?:\s+talentos)?\s+(?:é|e)\s+uma\s+plataforma\b/gi, "A EC10 Talentos é uma empresa de consultoria e desenvolvimento de carreira no futebol")
     .replace(/\bec10(?:\s+talentos)?\s+es\s+una\s+plataforma\b/gi, "EC10 Talentos es una empresa de consultoría y desarrollo de carrera en el fútbol")
@@ -411,9 +421,15 @@ export async function generateEc10SalesReplyWithAi(input: {
     reply='Para a agenda, preciso do seu nome completo como responsável que participará da reunião. Qual é?';
   }
   const repeatedBoilerplate = "A EC10 começa pelo planejamento da carreira, respeitando o momento do atleta e da família.";
-  if (normalizePortugueseText(reply) === normalizePortugueseText(repeatedBoilerplate)) return null;
+  if (normalizePortugueseText(reply) === normalizePortugueseText(repeatedBoilerplate)) {
+    console.warn(JSON.stringify({ event: "ai_sales_reply_rejected", reason: "blocked_boilerplate" }));
+    return null;
+  }
   reply = singleQuestionReply(reply,{age,role:speakerRole,fallback:""});
-  if (!reply) return null;
+  if (!reply) {
+    console.warn(JSON.stringify({ event: "ai_sales_reply_rejected", reason: "repeated_known_question" }));
+    return null;
+  }
 
   return {
     reply,
