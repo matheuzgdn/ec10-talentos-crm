@@ -1,7 +1,17 @@
 import { ensureSeller, handleApiError } from "./_auth.js";
 import { pool } from "./_db.js";
+import metaWhatsAppWebhookHandler from "./_meta-whatsapp-webhook.js";
+import metaWhatsAppOnboardingHandler from "./_meta-whatsapp-onboarding.js";
+
+export const config = { api: { bodyParser: false } };
 
 export default async function handler(request: any, response: any) {
+  if (String(request.query?.whatsapp_onboarding ?? "") === "1") {
+    return metaWhatsAppOnboardingHandler(request, response);
+  }
+  if (String(request.query?.whatsapp_cloud ?? "") === "1") {
+    return metaWhatsAppWebhookHandler(request, response);
+  }
   if (request.method !== "GET") {
     response.status(405).json({ error: "Method not allowed" });
     return;

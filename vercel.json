@@ -14,6 +14,14 @@
       "destination": "/api/booking?mode=calendar"
     },
     {
+      "source": "/api/meta-whatsapp-webhook",
+      "destination": "/api/messages?whatsapp_cloud=1"
+    },
+    {
+      "source": "/api/meta-whatsapp-onboarding",
+      "destination": "/api/messages?whatsapp_onboarding=1"
+    },
+    {
       "source": "/api/(.*)",
       "destination": "/api/$1"
     },

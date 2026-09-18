@@ -59,4 +59,6 @@ test-results/
 coverage/
 __pycache__/
 *.pyc
+.venv/
+.pytest_cache/
 supabase/.temp/

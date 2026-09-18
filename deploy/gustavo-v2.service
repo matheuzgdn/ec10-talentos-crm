@@ -1,0 +1,18 @@
+[Unit]
+Description=EC10 Gustavo V2 - WhatsApp Cloud API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=opc
+WorkingDirectory=/home/opc/ec10-gustavo-v2
+EnvironmentFile=/etc/ec10-gustavo-v2.env
+Environment=PYTHONPATH=/home/opc/ec10-gustavo-v2/.venv/lib/python3.9/site-packages
+ExecStart=/usr/bin/python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8781
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
