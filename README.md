@@ -14,6 +14,8 @@ Repositorio do ecossistema comercial da EC10 Talentos: painel do CRM, APIs, bot 
 
 O mapa completo de repositorios, rotas e ambientes esta em [docs/EC10-ECOSYSTEM-MAP.md](docs/EC10-ECOSYSTEM-MAP.md). O site institucional e as landing pages ficam no repositorio [ec10-manager](https://github.com/matheuzgdn/ec10-manager).
 
+O teste real e isolado do Gustavo pelo WhatsApp esta documentado em [docs/AMBIENTE-TESTE-WHATSAPP.md](docs/AMBIENTE-TESTE-WHATSAPP.md).
+
 ## Regra de seguranca
 
 Este repositorio nao contem chaves de API, senhas, banco, sessoes do WhatsApp, QR Codes, dados de leads ou chave SSH. Esses itens ficam somente nos ambientes autorizados. Nunca envie `.env`, `whatsapp-session`, `runtime`, backups ou inventarios privados ao GitHub.

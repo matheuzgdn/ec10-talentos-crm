@@ -16,6 +16,7 @@ import {
   configuredAiPlatform,
   isBotAiEnabled,
   recoverEc10FlowWithAi,
+  type AiSalesProfile,
   type BotRecoveryResult,
   transcribeAudioWithAi
 } from "./ai.js";
@@ -84,6 +85,7 @@ import {
   fetchPendingCareerMeetingGroupStates,
   fetchRecentClientMessages,
   fetchEc10LearningBase,
+  fetchBotLabWhatsappMessages,
   hasClientOutboundMessages,
   downloadWhatsappMedia,
   findMatchingRule,
@@ -93,10 +95,13 @@ import {
   getBotConversationState,
   getClientTrafficAttribution,
   hasRecentOutboundChatMessage,
+  findActiveBotLabWhatsappTester,
+  getOrCreateBotLabWhatsappSession,
   markClientForFollowUp,
   markOutboundMessage,
   recordOutboundChatMessage,
   recordIncomingWhatsAppCall,
+  recordBotLabWhatsappMessage,
   recordQueuedOutboundDelivery,
   recordWhatsAppMessageAck,
   recordTrafficEvent,
@@ -110,12 +115,15 @@ import {
   type ClientAutomationState,
   type Ec10MeetingRoute,
   type BotConversationState,
+  type BotLabWhatsappTester,
   updateClientEc10Profile,
+  updateBotLabWhatsappSession,
   updateClientFoundationStatus,
   updateClientAiProfile,
   storeInboundWhatsappMedia,
   upsertBotRuntime,
-  upsertInboundMessage
+  upsertInboundMessage,
+  touchBotLabWhatsappTester
 } from "./store.js";
 
 const { Client, LocalAuth, MessageMedia, Poll } = pkg;
@@ -3762,6 +3770,150 @@ async function sendPlanAndContinue(input: {
   });
 }
 
+function botLabSpeakerRole(value: string | null | undefined): "responsavel" | "atleta" | "outro" {
+  if (value === "responsavel" || value === "atleta") return value;
+  return "outro";
+}
+
+function botLabStageFromReply(input: {
+  qualifiesForMeeting: boolean;
+  athleteAge: number | null;
+  speakerRole: string | null | undefined;
+}) {
+  if (input.qualifiesForMeeting) return "ready_for_meeting";
+  if (input.athleteAge && input.athleteAge < 18 && input.speakerRole === "atleta") {
+    return "awaiting_guardian_confirmation";
+  }
+  return input.athleteAge ? "diagnosing" : "discovery";
+}
+
+async function handleBotLabWhatsappConversation(input: {
+  client: any;
+  chatId: string;
+  tester: BotLabWhatsappTester;
+  body: string | null;
+  mediaType: string;
+  whatsappMessageId: string | null;
+}) {
+  const session = await getOrCreateBotLabWhatsappSession(input.tester);
+  const inserted = await recordBotLabWhatsappMessage({
+    sessionId: session.id,
+    direction: "user",
+    body: input.body || `[${input.mediaType || "mensagem"}]`,
+    stage: session.current_stage || "discovery",
+    whatsappMessageId: input.whatsappMessageId,
+    metadata: { testerId: input.tester.id, mediaType: input.mediaType }
+  });
+  if (!inserted) return true;
+
+  const history = await fetchBotLabWhatsappMessages(session.id, 24);
+  const sessionMetadata = asMetadataRecord(session.metadata);
+  const profile = asMetadataRecord(sessionMetadata.aiProfile) as AiSalesProfile;
+  let aiReply: Awaited<ReturnType<typeof generateEc10SalesReplyWithAi>> = null;
+  try {
+    aiReply = await generateEc10SalesReplyWithAi({
+      message: input.body,
+      mediaType: input.mediaType,
+      history: history.map((item) => ({
+        direction: item.direction === "assistant" ? "outbound" : "inbound",
+        body: item.body,
+        mediaType: typeof item.metadata?.mediaType === "string" ? item.metadata.mediaType : "text"
+      })),
+      serviceInterest: session.service_interest,
+      profile,
+      athleteAge: session.athlete_age,
+      learningStage: session.current_stage || "discovery",
+      leadContext: {
+        registered: false,
+        leadName: input.tester.display_name,
+        source: "whatsapp_test",
+        landingVariant: "crm_bot_lab",
+        sourcePath: "/crm/ambiente-de-testes",
+        purchaseStage: "laboratorio"
+      }
+    });
+  } catch (error) {
+    console.warn("Bot lab AI provider unavailable", error instanceof Error ? error.message : String(error));
+    await touchBotLabWhatsappTester(input.tester.id, "provider_fallback");
+  }
+
+  const fallback = session.athlete_age
+    ? "Quero seguir exatamente do ponto em que você parou. Me conta um pouco mais sobre esse momento no futebol."
+    : "Tudo certo por aqui 😄 Me conta, o que te trouxe até a EC10?";
+  const baseReply = aiReply?.reply?.trim() || fallback;
+  const qualifiesForMeeting = aiReply ? isAiLeadQualifiedForMeeting(aiReply) : false;
+  const reply = qualifiesForMeeting
+    ? `${baseReply}\n\n🧪 Teste concluído: aqui o cliente receberia o link da agenda. Nenhum lead ou reunião foi criado.`
+    : baseReply;
+  const nextStage = botLabStageFromReply({
+    qualifiesForMeeting,
+    athleteAge: aiReply?.athleteAge ?? session.athlete_age,
+    speakerRole: aiReply?.speakerRole ?? profile.speakerRole
+  });
+
+  const pauseReason = await getImmediateOutboundPauseReason();
+  if (pauseReason) throw new Error(`Envio WhatsApp pausado: ${pauseReason}`);
+  await sendTypingPause(input.client, input.chatId, 700, 1300);
+  const sent = await sendWhatsAppWithRetry(() => input.client.sendMessage(input.chatId, reply));
+  await recordBotLabWhatsappMessage({
+    sessionId: session.id,
+    direction: "assistant",
+    body: reply,
+    stage: nextStage,
+    whatsappMessageId: getWhatsAppMessageId(sent),
+    metadata: {
+      testerId: input.tester.id,
+      mediaType: "text",
+      provider: configuredAiPlatform(),
+      qualifiesForMeeting,
+      wouldSchedule: qualifiesForMeeting
+    }
+  });
+
+  const nextProfile: AiSalesProfile = aiReply ? {
+    responsibleName: aiReply.responsibleName || profile.responsibleName || null,
+    athleteName: aiReply.athleteName || profile.athleteName || null,
+    speakerRole: aiReply.speakerRole || profile.speakerRole || null,
+    guardianConfirmed: aiReply.guardianConfirmed,
+    qualificationStatus: aiReply.qualificationStatus,
+    qualificationReason: aiReply.qualificationReason,
+    objectiveConfirmed: aiReply.objectiveConfirmed,
+    decisionMakerConfirmed: aiReply.decisionMakerConfirmed,
+    mainPain: aiReply.mainPain,
+    mainDifficulty: aiReply.mainDifficulty,
+    primaryObjective: aiReply.primaryObjective,
+    currentSituation: aiReply.currentSituation,
+    urgency: aiReply.urgency,
+    decisionReadiness: aiReply.decisionReadiness,
+    investmentReadiness: aiReply.investmentReadiness,
+    journeyStage: aiReply.journeyStage,
+    conversationStyle: aiReply.conversationStyle,
+    objectionCategory: aiReply.objectionCategory,
+    recommendedNextStep: aiReply.recommendedNextStep
+  } : profile;
+
+  await updateBotLabWhatsappSession({
+    sessionId: session.id,
+    stage: nextStage,
+    athleteAge: aiReply?.athleteAge ?? session.athlete_age,
+    speakerRole: botLabSpeakerRole(aiReply?.speakerRole ?? profile.speakerRole),
+    serviceInterest: aiReply?.serviceInterest ?? session.service_interest,
+    metadata: {
+      ...sessionMetadata,
+      channel: "whatsapp",
+      testerId: input.tester.id,
+      isolated: true,
+      realActions: 0,
+      aiProfile: nextProfile,
+      lastProvider: configuredAiPlatform(),
+      lastReplyAt: new Date().toISOString(),
+      wouldSchedule: qualifiesForMeeting
+    }
+  });
+  await touchBotLabWhatsappTester(input.tester.id, qualifiesForMeeting ? "meeting_ready_isolated" : "reply_sent");
+  return true;
+}
+
 async function handleEc10AiConversation(
   client: any,
   chatId: string,
@@ -5861,6 +6013,20 @@ async function main() {
         : null;
       const messageBody = await resolveMessageBody(client, message, mediaType, downloadedMedia);
       const resolvedPhone = await resolveInboundChatId(client, message.from);
+      const labTester = await findActiveBotLabWhatsappTester(resolvedPhone);
+      if (labTester) {
+        await withConversationLock(resolvedPhone, async () => {
+          await handleBotLabWhatsappConversation({
+            client,
+            chatId: message.from,
+            tester: labTester,
+            body: messageBody,
+            mediaType,
+            whatsappMessageId: repairedMessageId ?? message.id?.id ?? null
+          });
+        });
+        return;
+      }
       const clientState = await upsertInboundMessage({
         phone: resolvedPhone,
         name: contactName,

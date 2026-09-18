@@ -104,6 +104,34 @@ export type IncomingWhatsAppCall = {
   webClientShouldHandle?: boolean;
 };
 
+export type BotLabWhatsappTester = {
+  id: string;
+  profile_id: string;
+  phone: string;
+  display_name: string | null;
+  active: boolean;
+  expires_at: string;
+  metadata: Record<string, unknown>;
+};
+
+export type BotLabWhatsappSession = {
+  id: string;
+  created_by: string;
+  current_stage: string;
+  athlete_age: number | null;
+  speaker_role: "responsavel" | "atleta" | "outro";
+  service_interest: ServiceInterest | null;
+  metadata: Record<string, unknown>;
+};
+
+export type BotLabWhatsappMessage = {
+  direction: "user" | "assistant";
+  body: string;
+  stage: string;
+  created_at: string;
+  metadata: Record<string, unknown>;
+};
+
 let client: SupabaseClient<any, any, any, any, any> | null = null;
 let pool: Pool | null = null;
 let botDedupeTableReady = false;
@@ -225,22 +253,259 @@ export async function fetchEc10LearningBase() {
   const database = getDatabase();
   const supabase = getSupabase();
   if (database) {
-    const owner = await database.query("select id from public.profiles where lower(email)=$1 and role='superadmin' and is_active=true limit 1", ['matheusgdn94@gmail.com']);
-    const id = owner.rows[0]?.id;
-    if (!id) throw new Error('EC10 learning owner unavailable');
-    const examples = await database.query("select * from public.bot_training_examples where reviewed_by=$1 and rating in ('approved','corrected') order by updated_at desc limit 1000", [id]);
-    const materials = await database.query("select title,summary,raw_content,analysis,status from public.bot_lab_materials where created_by=$1 and status='active' order by updated_at desc limit 100", [id]);
+    const reviewers = await database.query("select id from public.profiles where is_active=true and (lower(email)=$1 or role in ('admin','superadmin'))", ['matheusgdn94@gmail.com']);
+    const ids = reviewers.rows.map((item) => item.id).filter(Boolean);
+    if (!ids.length) throw new Error('EC10 learning reviewers unavailable');
+    const examples = await database.query("select * from public.bot_training_examples where reviewed_by = any($1::text[]) and rating in ('approved','corrected') order by updated_at desc limit 1000", [ids]);
+    const materials = await database.query("select title,summary,raw_content,analysis,status from public.bot_lab_materials where created_by = any($1::text[]) and status='active' order by updated_at desc limit 100", [ids]);
     return { examples: examples.rows, materials: materials.rows };
   }
   if (!supabase) throw new Error('EC10 learning storage unavailable');
-  const owner = await supabase.schema('public').from('profiles').select('id').eq('email', 'matheusgdn94@gmail.com').eq('role', 'superadmin').eq('is_active', true).limit(1).single();
-  if (owner.error || !owner.data) throw new Error('EC10 learning owner unavailable');
+  const reviewers = await supabase.schema('public').from('profiles').select('id,role,email').eq('is_active', true).or('role.in.(admin,superadmin),email.ilike.matheusgdn94@gmail.com');
+  const ids = (reviewers.data ?? []).map((item) => item.id).filter(Boolean);
+  if (reviewers.error || !ids.length) throw new Error('EC10 learning reviewers unavailable');
   const [examples, materials] = await Promise.all([
-    supabase.schema('public').from('bot_training_examples').select('*').eq('reviewed_by', owner.data.id).in('rating', ['approved','corrected']).order('updated_at', {ascending:false}).limit(1000),
-    supabase.schema('public').from('bot_lab_materials').select('title,summary,raw_content,analysis,status').eq('created_by', owner.data.id).eq('status','active').order('updated_at',{ascending:false}).limit(100),
+    supabase.schema('public').from('bot_training_examples').select('*').in('reviewed_by', ids).in('rating', ['approved','corrected']).order('updated_at', {ascending:false}).limit(1000),
+    supabase.schema('public').from('bot_lab_materials').select('title,summary,raw_content,analysis,status').in('created_by', ids).eq('status','active').order('updated_at',{ascending:false}).limit(100),
   ]);
   if (examples.error || materials.error) throw new Error('EC10 learning read failed');
   return { examples: examples.data || [], materials: materials.data || [] };
+}
+
+export async function findActiveBotLabWhatsappTester(phoneInput: string): Promise<BotLabWhatsappTester | null> {
+  const phone = normalizePhone(phoneInput, config.BOT_DEFAULT_COUNTRY_CODE);
+  const candidates = phoneLookupCandidates(phone);
+  const database = getDatabase();
+  const supabase = getSupabase();
+  if (!phone || (!database && !supabase)) return null;
+
+  if (database) {
+    try {
+      const { rows } = await database.query<BotLabWhatsappTester>(`
+        select id, profile_id, phone, display_name, active, expires_at, metadata
+        from public.bot_lab_whatsapp_testers
+        where phone = any($1::text[])
+          and active = true
+          and expires_at > now()
+        order by updated_at desc
+        limit 1
+      `, [candidates]);
+      return rows[0] ?? null;
+    } catch (error) {
+      if ((error as { code?: string })?.code === "42P01") return null;
+      throw error;
+    }
+  }
+
+  const { data, error } = await supabase!.schema("public")
+    .from("bot_lab_whatsapp_testers")
+    .select("id, profile_id, phone, display_name, active, expires_at, metadata")
+    .in("phone", candidates)
+    .eq("active", true)
+    .gt("expires_at", new Date().toISOString())
+    .order("updated_at", { ascending: false })
+    .limit(1);
+  if (error) {
+    if (error.code === "42P01") return null;
+    throw error;
+  }
+  return (data?.[0] as BotLabWhatsappTester | undefined) ?? null;
+}
+
+export async function getOrCreateBotLabWhatsappSession(
+  tester: BotLabWhatsappTester
+): Promise<BotLabWhatsappSession> {
+  const database = getDatabase();
+  const supabase = getSupabase();
+  if (!database && !supabase) throw new Error("WhatsApp test storage unavailable");
+
+  if (database) {
+    const existing = await database.query<BotLabWhatsappSession>(`
+      select id, created_by, current_stage, athlete_age, speaker_role, service_interest, metadata
+      from public.bot_lab_sessions
+      where created_by = $1
+        and status = 'active'
+        and metadata->>'channel' = 'whatsapp'
+        and metadata->>'testerId' = $2
+      order by updated_at desc
+      limit 1
+    `, [tester.profile_id, tester.id]);
+    if (existing.rows[0]) return existing.rows[0];
+    const inserted = await database.query<BotLabWhatsappSession>(`
+      insert into public.bot_lab_sessions
+        (created_by, name, status, current_stage, speaker_role, system_version, metadata)
+      values
+        ($1, $2, 'active', 'discovery', 'outro', 'gustavo-whatsapp-test-v1', $3::jsonb)
+      returning id, created_by, current_stage, athlete_age, speaker_role, service_interest, metadata
+    `, [
+      tester.profile_id,
+      `Teste WhatsApp - ${tester.display_name || tester.phone.slice(-4)}`,
+      JSON.stringify({ channel: "whatsapp", testerId: tester.id, isolated: true, realActions: 0, aiProfile: {} })
+    ]);
+    return inserted.rows[0];
+  }
+
+  const recent = await supabase!.schema("public").from("bot_lab_sessions")
+    .select("id, created_by, current_stage, athlete_age, speaker_role, service_interest, metadata")
+    .eq("created_by", tester.profile_id)
+    .eq("status", "active")
+    .order("updated_at", { ascending: false })
+    .limit(20);
+  if (recent.error) throw recent.error;
+  const existing = (recent.data ?? []).find((item: any) => (
+    item.metadata?.channel === "whatsapp" && item.metadata?.testerId === tester.id
+  ));
+  if (existing) return existing as BotLabWhatsappSession;
+  const created = await supabase!.schema("public").from("bot_lab_sessions").insert({
+    created_by: tester.profile_id,
+    name: `Teste WhatsApp - ${tester.display_name || tester.phone.slice(-4)}`,
+    status: "active",
+    current_stage: "discovery",
+    speaker_role: "outro",
+    system_version: "gustavo-whatsapp-test-v1",
+    metadata: { channel: "whatsapp", testerId: tester.id, isolated: true, realActions: 0, aiProfile: {} }
+  }).select("id, created_by, current_stage, athlete_age, speaker_role, service_interest, metadata").single();
+  if (created.error) throw created.error;
+  return created.data as BotLabWhatsappSession;
+}
+
+export async function fetchBotLabWhatsappMessages(sessionId: string, limit = 24): Promise<BotLabWhatsappMessage[]> {
+  const database = getDatabase();
+  const supabase = getSupabase();
+  const safeLimit = Math.max(1, Math.min(60, Math.round(limit)));
+  if (!database && !supabase) return [];
+  if (database) {
+    const { rows } = await database.query<BotLabWhatsappMessage>(`
+      select direction, body, stage, created_at, metadata
+      from public.bot_lab_messages
+      where session_id = $1
+      order by created_at desc
+      limit $2
+    `, [sessionId, safeLimit]);
+    return rows.reverse();
+  }
+  const result = await supabase!.schema("public").from("bot_lab_messages")
+    .select("direction, body, stage, created_at, metadata")
+    .eq("session_id", sessionId)
+    .order("created_at", { ascending: false })
+    .limit(safeLimit);
+  if (result.error) throw result.error;
+  return ((result.data ?? []) as BotLabWhatsappMessage[]).reverse();
+}
+
+export async function recordBotLabWhatsappMessage(input: {
+  sessionId: string;
+  direction: "user" | "assistant";
+  body: string;
+  stage: string;
+  whatsappMessageId?: string | null;
+  metadata?: Record<string, unknown>;
+}) {
+  const database = getDatabase();
+  const supabase = getSupabase();
+  if (!database && !supabase) return false;
+  const whatsappMessageId = input.whatsappMessageId?.trim() || null;
+  const metadata = {
+    isolated: true,
+    channel: "whatsapp",
+    realActions: 0,
+    ...(whatsappMessageId ? { whatsappMessageId } : {}),
+    ...(input.metadata ?? {})
+  };
+
+  if (database) {
+    if (whatsappMessageId) {
+      const duplicate = await database.query(`
+        select id from public.bot_lab_messages
+        where session_id = $1
+          and direction = $2
+          and metadata->>'whatsappMessageId' = $3
+        limit 1
+      `, [input.sessionId, input.direction, whatsappMessageId]);
+      if (duplicate.rowCount) return false;
+    }
+    await database.query(`
+      insert into public.bot_lab_messages
+        (session_id, direction, body, stage, metadata)
+      values ($1, $2, $3, $4, $5::jsonb)
+    `, [input.sessionId, input.direction, input.body, input.stage, JSON.stringify(metadata)]);
+    return true;
+  }
+
+  if (whatsappMessageId) {
+    const duplicate = await supabase!.schema("public").from("bot_lab_messages")
+      .select("id")
+      .eq("session_id", input.sessionId)
+      .eq("direction", input.direction)
+      .contains("metadata", { whatsappMessageId })
+      .limit(1);
+    if (duplicate.error) throw duplicate.error;
+    if (duplicate.data?.length) return false;
+  }
+  const inserted = await supabase!.schema("public").from("bot_lab_messages").insert({
+    session_id: input.sessionId,
+    direction: input.direction,
+    body: input.body,
+    stage: input.stage,
+    metadata
+  });
+  if (inserted.error) throw inserted.error;
+  return true;
+}
+
+export async function updateBotLabWhatsappSession(input: {
+  sessionId: string;
+  stage: string;
+  athleteAge?: number | null;
+  speakerRole?: "responsavel" | "atleta" | "outro";
+  serviceInterest?: ServiceInterest | null;
+  metadata: Record<string, unknown>;
+}) {
+  const database = getDatabase();
+  const supabase = getSupabase();
+  if (!database && !supabase) return;
+  if (database) {
+    await database.query(`
+      update public.bot_lab_sessions
+      set current_stage = $2,
+          athlete_age = $3,
+          speaker_role = $4,
+          service_interest = $5,
+          metadata = $6::jsonb,
+          updated_at = now()
+      where id = $1
+    `, [input.sessionId, input.stage, input.athleteAge ?? null, input.speakerRole ?? "outro", input.serviceInterest ?? null, JSON.stringify(input.metadata)]);
+    return;
+  }
+  const result = await supabase!.schema("public").from("bot_lab_sessions").update({
+    current_stage: input.stage,
+    athlete_age: input.athleteAge ?? null,
+    speaker_role: input.speakerRole ?? "outro",
+    service_interest: input.serviceInterest ?? null,
+    metadata: input.metadata,
+    updated_at: new Date().toISOString()
+  }).eq("id", input.sessionId);
+  if (result.error) throw result.error;
+}
+
+export async function touchBotLabWhatsappTester(testerId: string, result: string) {
+  const database = getDatabase();
+  const supabase = getSupabase();
+  if (!database && !supabase) return;
+  if (database) {
+    await database.query(`
+      update public.bot_lab_whatsapp_testers
+      set last_message_at = now(), last_result = $2, updated_at = now()
+      where id = $1
+    `, [testerId, result.slice(0, 120)]);
+    return;
+  }
+  const update = await supabase!.schema("public").from("bot_lab_whatsapp_testers").update({
+    last_message_at: new Date().toISOString(),
+    last_result: result.slice(0, 120),
+    updated_at: new Date().toISOString()
+  }).eq("id", testerId);
+  if (update.error) throw update.error;
 }
 
 function phoneLookupCandidates(phone: string) {
