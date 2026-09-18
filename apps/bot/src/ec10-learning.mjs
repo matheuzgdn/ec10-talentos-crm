@@ -1,4 +1,7 @@
 export const LEARNING_VERSION = 'ec10-shared-learning-20260916-v2';
+const blockedGenericReplies = new Set([
+  learningText('A EC10 começa pelo planejamento da carreira, respeitando o momento do atleta e da família.'),
+]);
 export function conversationRole(message, fallback = 'outro', history = []) {
   const text = learningText(message);
   if (/\b(sou (o |a )?(pai|mae|responsavel)|meu filho|minha filha|responsavel legal)\b/.test(text)) return 'responsavel';
@@ -77,7 +80,8 @@ export function exactLearningReply(base, input) {
 export function learningPrompt(base, input) {
   const examples = (base.examples || []).filter(item => item.stage === input.stage
     && (!input.age || item.athlete_age == null || Number(item.athlete_age) === Number(input.age))
-    && (!input.role || input.role === 'outro' || !item.speaker_role || item.speaker_role === 'outro' || item.speaker_role === input.role)).slice(0, 16)
+    && (!input.role || input.role === 'outro' || !item.speaker_role || item.speaker_role === 'outro' || item.speaker_role === input.role)
+    && !blockedGenericReplies.has(learningText(item.rating === 'corrected' ? item.corrected_response : item.assistant_response))).slice(0, 16)
     .map(item => ({ cliente: item.user_message, respostaIdeal: item.rating === 'corrected' ? item.corrected_response : item.assistant_response }));
   const materials = (base.materials || []).filter(item => item.status === 'active').slice(0, 24)
     .map(item => ({ titulo: item.title, tipo:item.analysis?.kind || 'material', resumo: item.summary, conteudo: String(item.raw_content || '').slice(0, item.analysis?.kind === 'skill' ? 30000 : item.analysis?.kind === 'attendance_correction' ? 10000 : 1800) }));

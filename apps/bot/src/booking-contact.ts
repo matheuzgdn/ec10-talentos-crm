@@ -29,9 +29,14 @@ export function selectBookingContactName(input:{
         metadataName(input.metadata,'guardianName'),
         ...(input.responsibleRole ? [metadataName(input.metadata,'leadName')] : []),
       ]
-    : [metadataName(input.metadata,'bookingContactName'),metadataName(input.metadata,'leadName')];
+    : [
+        metadataName(input.metadata,'bookingContactName'),
+        metadataName(input.metadata,'leadName'),
+        metadataName(input.metadata,'athleteName'),
+      ];
   const athleteKey=athleteName?.toLocaleLowerCase('pt-BR');
   return candidates.find(name=>{
+    if(!input.minor&&!input.responsibleRole)return Boolean(name);
     if(!name||!athleteKey)return Boolean(name);
     const candidateKey=name.toLocaleLowerCase('pt-BR');
     return candidateKey!==athleteKey&&!candidateKey.startsWith(`${athleteKey} `)&&!athleteKey.startsWith(`${candidateKey} `);

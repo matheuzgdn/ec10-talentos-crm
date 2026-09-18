@@ -12,7 +12,7 @@ export function conversationRole(message, fallback = 'outro', history = []) {
 // Enforce the same conversational gate in the simulator and the real sender.
 export function singleQuestionReply(value, options = {}) {
   const text = String(value || '').trim();
-  const fallback = String(options.fallback || 'A EC10 começa pelo planejamento da carreira, respeitando o momento do atleta e da família.').trim();
+  const fallback = String(options.fallback || '').trim();
   const parts = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [];
   let questions = 0;
   const kept = [];

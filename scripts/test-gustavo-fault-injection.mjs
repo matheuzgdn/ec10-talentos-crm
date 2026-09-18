@@ -50,7 +50,13 @@ for (const unsafe of [
 }
 
 const indexSource = fs.readFileSync("apps/bot/src/index.ts", "utf8");
-assert.match(indexSource, /withSdrCustomerTurn\(clientState\.id,clientState\.phone,\(\)=>handleEc10SdrTurn/);
+const aiSource = fs.readFileSync("apps/bot/src/ai.ts", "utf8");
+const primaryRouteSource = indexSource.match(/async function handleGustavoPrimaryRoute[\s\S]*?\n}\n\nasync function saveGustavoRecoveryPatch/)?.[0] || "";
+assert.match(primaryRouteSource, /return handleEc10AiConversation\(/);
+assert.doesNotMatch(primaryRouteSource, /handleEc10Conversation\(/);
+assert.doesNotMatch(primaryRouteSource, /handleEc10SdrTurn\(/);
+assert.doesNotMatch(aiSource, /exactLearningReply/);
+assert.match(aiSource, /ai_text_provider_result/);
 assert.match(indexSource, /withSdrCustomerTurn\(clientId,phone,\(\)=>handleEc10ConversationInternal/);
 assert.doesNotMatch(indexSource, /:sdr_turn:\$\{sdrTurn\.turn\}/);
 assert.match(indexSource, /stage:\s*"awaiting_booking_completion"/);
@@ -58,7 +64,7 @@ assert.match(indexSource, /guardianIdentityPreviouslyContradicted/);
 assert.match(indexSource, /sanitizeBotOutboundBody/);
 
 console.log(JSON.stringify({
-  passed: positiveReplies.length + 16,
-  total: positiveReplies.length + 16,
+  passed: positiveReplies.length + 20,
+  total: positiveReplies.length + 20,
   noWhatsAppSent: true,
 }, null, 2));

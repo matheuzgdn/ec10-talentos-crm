@@ -72,6 +72,7 @@ write_status "validating" "$target_commit" "install_build_test"
   npm run build
   node scripts/scan-repository-secrets.mjs
   node scripts/test-gustavo-fault-injection.mjs
+  node scripts/test-gustavo-2026-09-17-regressions.mjs
   node scripts/test-gustavo-provider-failure.mjs
 )
 

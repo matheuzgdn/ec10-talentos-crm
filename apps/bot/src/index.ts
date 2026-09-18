@@ -3035,7 +3035,14 @@ function isMeetingTimeOption(value: unknown): value is Ec10MeetingTimeOption {
   );
 }
 
-async function askMeetingDate(client: any, chatId: string, clientId: string, phone: string, previous: BotConversationState | null) {
+async function askMeetingDate(
+  client: any,
+  chatId: string,
+  clientId: string,
+  phone: string,
+  previous: BotConversationState | null,
+  options: { aiLed?: boolean } = {},
+) {
   // Always reload: the previous audio-sequence snapshot may contain obsolete flags.
   previous=await getBotConversationState(phone)??previous;
   const service = previous?.service_interest === "plano_internacional" || previous?.service_interest === "ambos"
@@ -3049,6 +3056,9 @@ async function askMeetingDate(client: any, chatId: string, clientId: string, pho
   }
   const contactName=selectBookingContactName({metadata:previous?.metadata,minor,responsibleRole:knownRole});
   if(!contactName) {
+    if (options.aiLed) {
+      throw new Error("ai_booking_contact_name_missing");
+    }
     await persistEc10State({clientId,phone,previous,stage:'awaiting_interest',completedAt:null,
       metadata:{bookingContactPending:true,audioSequenceInProgress:false}});
     await sendBotText(client,chatId,clientId,minor
@@ -3074,9 +3084,15 @@ async function askMeetingDate(client: any, chatId: string, clientId: string, pho
       aiRecoveryAttempts: 0
     }
   });
-  await sendBotText(client, chatId, clientId,
-    `${guardianNote}Sua agenda já está com o plano, nome, WhatsApp e idade preenchidos. Escolha primeiro o dia, depois o horário, e confirme.\n\n${bookingUrl}`,
-    [700, 1400]);
+  await sendBotText(
+    client,
+    chatId,
+    clientId,
+    options.aiLed
+      ? bookingUrl
+      : `${guardianNote}Sua agenda já está com o plano, nome, WhatsApp e idade preenchidos. Escolha primeiro o dia, depois o horário, e confirme.\n\n${bookingUrl}`,
+    [700, 1400],
+  );
 }
 
 function bookingMessageIntent(body: string | null | undefined) {
@@ -3983,115 +3999,30 @@ async function handleEc10AiConversation(
   body: string | null,
   mediaType = "text",
 ) {
-  const existingFlowState = await getBotConversationState(clientState.phone);
-  const greeting=sdrGreeting(body);
-  if(existingFlowState?.stage==='completed') {
-    const intent=bookingMessageIntent(body);
-    const completedMetadata=asMetadataRecord(existingFlowState.metadata);
-    const url=typeof completedMetadata.bookingUrl==='string'?completedMetadata.bookingUrl:null;
-    const hasMeeting=!!asMetadataRecord(completedMetadata.meeting).bookingId||!!completedMetadata.bookingId;
-    if(intent==='ack') {
-      await sendBotText(client,chatId,clientState.id,hasMeeting
-        ? 'Combinado. Sua reunião está registrada na agenda. Se precisar de ajuda, pode chamar por aqui.'
-        : 'Combinado. Quando quiser retomar, é só chamar por aqui.',[400,800]);
-      return true;
-    }
-    if(intent==='location') {
-      await sendBotText(client,chatId,clientState.id,'Nossa base fica em Belo Horizonte, no bairro Gutierrez. As reuniões comerciais podem acontecer online.',[400,800]);
-      return true;
-    }
-    if((intent==='reschedule'||intent==='link')&&url) {
-      await sendBotText(client,chatId,clientState.id,`${intent==='reschedule'?'Para escolher outro horário, abra sua reserva pelo mesmo link:':'Este é o link da sua reserva:'}\n\n${url}`,[400,800]);
-      return true;
-    }
-    if(intent==='cancel'&&hasMeeting) {
-      await sendBotText(client,chatId,clientState.id,'Vou encaminhar seu pedido de cancelamento para a equipe conferir a reserva e evitar qualquer erro. Não precisa repetir os dados.',[400,800]);
-      await appendClientTags(clientState.id,['cancelamento_reuniao_solicitado','consultor_responsavel']);
-      await updateClientAiProfile({clientId:clientState.id,handoffRequested:true,automationPauseRequested:true,leadTemperature:'quente'});
-      return true;
-    }
+  let existingFlowState = await getBotConversationState(clientState.phone);
+  if (!existingFlowState) {
+    const initialAge = extractAthleteAge(body) ?? clientState.athlete_age ?? null;
+    const initialPlan = initialAge ? getEc10LeadPlan(initialAge) : null;
+    existingFlowState = await persistEc10State({
+      clientId: clientState.id,
+      phone: clientState.phone,
+      previous: null,
+      stage: initialAge ? "awaiting_interest" : "awaiting_age",
+      roleAnswer: null,
+      athleteAge: initialAge,
+      ageGroup: initialPlan?.ageGroup ?? null,
+      serviceInterest: clientState.service_interest ?? null,
+      completedAt: null,
+      metadata: {
+        source: "gustavo_ai_sdr",
+        professionalAiSdr: true,
+        sdrActiveEngine: "gustavo_gemini_primary",
+        aiConversationStartedAt: new Date().toISOString(),
+      },
+    });
   }
-  if(greeting&&existingFlowState?.stage==='completed') {
-    const hasMeeting=!!asMetadataRecord(existingFlowState.metadata?.meeting).bookingId||!!existingFlowState.metadata?.bookingId;
-    await sendBotText(client,chatId,clientState.id,`${greeting} ${hasMeeting?'Como posso te ajudar com a reunião que você agendou?':'Como posso te ajudar hoje?'}`,[500,1000]);
-    return true;
-  }
-  if(existingFlowState?.stage==='completed') {
-    if(isRestartCommand(body))return handleEc10Conversation(client,chatId,clientState.id,clientState.phone,body,mediaType);
-    if(explicitSdrHuman(body)||explicitSdrStop(body))return withSdrCustomerTurn(clientState.id,clientState.phone,()=>handleEc10SdrTurn(client,chatId,clientState.id,clientState.phone,{...existingFlowState,metadata:{...existingFlowState.metadata,sdrStep:'next'}},body));
-    const age=existingFlowState.athlete_age;
-    if(age) {
-      const offer=sdrOffer(age,existingFlowState.metadata.sdrOfferId)??eligibleSdrOffers(age).find(o=>o.service===existingFlowState.service_interest)??null;
-      const answer=await answerEc10SdrQuestion({age,offer,step:'booking',message:body});
-      const url=typeof existingFlowState.metadata.bookingUrl==='string'?existingFlowState.metadata.bookingUrl:null;
-      await sendBotText(client,chatId,clientState.id,`${answer}${url&&existingFlowState.metadata.bookingId?`\n\nVocê pode consultar sua reserva pelo mesmo link: ${url}`:'\n\nSe precisar, escreva “atendente” para falar com a equipe.'}`,[500,1000]);
-    }else{
-      await sendBotText(client,chatId,clientState.id,'Qual é sua dúvida? Se preferir falar com a equipe, escreva “atendente”.',[500,1000]);
-    }
-    return true;
-  }
-  // Structured entry controls age and service selection even in AI-primary mode.
-  if(!existingFlowState)return handleEc10Conversation(client,chatId,clientState.id,clientState.phone,body,mediaType);
-  const routedAge = extractAthleteAge(body) ?? clientState.athlete_age;
-  if (!existingFlowState && routedAge) {
-    const plan = getEc10LeadPlan(routedAge);
-    if (plan) {
-      const initialState: BotConversationState = {
-        id: "",
-        client_id: clientState.id,
-        phone: clientState.phone,
-        stage: "awaiting_age",
-        role_answer: null,
-        athlete_age: routedAge,
-        age_group: plan.ageGroup,
-        service_interest: plan.serviceInterest,
-        lead_page_url: plan.leadPageUrl,
-        completed_at: null,
-        metadata: {
-          source: "groq_ai_sdr",
-          flowVersion: "eric_2026_09_14"
-        }
-      };
-      await updateClientAiProfile({
-        clientId: clientState.id,
-        serviceInterest: plan.serviceInterest,
-        athleteAge: routedAge,
-        leadTemperature: "morno",
-        handoffRequested: false
-      });
-      if (shouldAskFoundationStatus(routedAge)) {
-        await persistEc10State({
-          clientId: clientState.id,
-          phone: clientState.phone,
-          previous: initialState,
-          stage: 'awaiting_foundation_status',
-          athleteAge: routedAge,
-          ageGroup: plan.ageGroup,
-          serviceInterest: plan.serviceInterest,
-          leadPageUrl: plan.leadPageUrl,
-          completedAt: null,
-          metadata: { foundationQuestionAskedAt: new Date().toISOString() }
-        });
-        await askFoundationStatus(client, chatId, clientState.id, [900, 1800]);
-        return true;
-      }
-      await sendPlanAndContinue({
-        client,
-        chatId,
-        clientId: clientState.id,
-        phone: clientState.phone,
-        currentState: initialState,
-        athleteAge: routedAge,
-        plan,
-        nextStep: "meeting",
-        extraMetadata: {
-          source: "groq_ai_sdr",
-          ericFlowVersion: "2026-09-14",
-          structuredAgeRouting: true
-        }
-      });
-      return true;
-    }
+  if (!existingFlowState) {
+    throw new Error("ai_conversation_state_unavailable");
   }
 
   const history = await fetchRecentClientMessages(clientState.id, 14);
@@ -4107,9 +4038,9 @@ async function handleEc10AiConversation(
     ...(typeof leadMetadata.responsibleName==='string'?{responsibleName:leadMetadata.responsibleName}:{}),
     ...(typeof leadMetadata.athleteName==='string'?{athleteName:leadMetadata.athleteName}:{}),
   } as AiSalesProfile;
-  const aiReply = await generateEc10SalesReplyWithAi({
+  const aiRequest = {
     athleteAge: existingFlowState?.athlete_age || clientState.athlete_age || null,
-    learningStage: existingFlowState?.stage === 'awaiting_guardian_confirmation' ? 'awaiting_guardian_confirmation' : 'diagnosing',
+    learningStage: existingFlowState.stage,
     message: body,
     mediaType,
     history,
@@ -4126,49 +4057,39 @@ async function handleEc10AiConversation(
       landingVariant:typeof leadMetadata.landingVariant==='string'?leadMetadata.landingVariant:null,
       sourcePath:typeof leadMetadata.sourcePath==='string'?leadMetadata.sourcePath:null,
       purchaseStage:typeof leadMetadata.purchaseStage==='string'?leadMetadata.purchaseStage:null},
-  });
+  };
+  let aiReply = await generateEc10SalesReplyWithAi(aiRequest);
+  if (!aiReply) {
+    console.warn(JSON.stringify({
+      event: "ai_primary_reply_retry",
+      clientId: clientState.id,
+      stage: existingFlowState.stage,
+    }));
+    aiReply = await generateEc10SalesReplyWithAi(aiRequest);
+  }
 
   if (!aiReply) {
-    const persistedProfile = (clientState.attribution_metadata?.ai_sdr as Record<string, unknown> | undefined) ?? {};
-    const knownRole = persistedProfile.speakerRole === "responsavel"
-      ? "responsável"
-      : persistedProfile.speakerRole === "gestor"
-        ? "gestor de escola ou projeto"
-        : persistedProfile.speakerRole === "atleta"
-          ? "atleta"
-          : null;
-    const knownAge = typeof clientState.athlete_age === "number" ? clientState.athlete_age : null;
-    const knownService = clientState.service_interest === "eurocamp" || clientState.service_interest === "eurocamp_latam"
-      ? "Eurocamp"
-      : clientState.service_interest === "plano_carreira"
-        ? "Plano de Carreira"
-        : clientState.service_interest === "plano_internacional"
-          ? "Plano Internacional"
-          : null;
-    const knownParts = [knownRole, knownAge ? `${knownAge} anos` : null, knownService]
-      .filter(Boolean)
-      .join(", ");
-    const fallback = knownParts
-      ? 'Para te orientar melhor, qual é sua maior dificuldade hoje no futebol?'
-      : ec10Messages.ageQuestion;
-    await sendBotText(client, chatId, clientState.id, fallback, [700, 1400]);
     await appendClientTags(clientState.id, ["ia_resposta_reserva"]);
-    await updateClientAiProfile({ clientId: clientState.id, leadTemperature: "morno", handoffRequested: false });
     await recordTrafficEvent({
       clientId: clientState.id,
       phone: clientState.phone,
       eventType: "ai_primary_temporary_fallback",
       channel: "whatsapp",
-      platform: "groq",
+      platform: configuredAiPlatform(),
       serviceInterest: clientState.service_interest,
-      metadata: { mediaType, aiMode: config.BOT_AI_MODE },
+      metadata: { mediaType, aiMode: config.BOT_AI_MODE, retried: true },
     });
-    return true;
+    throw new Error("ai_primary_no_valid_reply");
   }
 
   if(existingFlowState) {
+    const nextAiStage = existingFlowState.stage === "completed" || existingFlowState.stage === "awaiting_booking_completion"
+      ? existingFlowState.stage
+      : aiReply.athleteAge
+        ? "awaiting_interest"
+        : "awaiting_age";
     await persistEc10State({clientId:clientState.id,phone:clientState.phone,previous:existingFlowState,
-      stage:existingFlowState.stage,
+      stage:nextAiStage,
       roleAnswer:aiReply.speakerRole==='unknown'?existingFlowState.role_answer:aiReply.speakerRole,
       athleteAge:aiReply.athleteAge??existingFlowState.athlete_age,
       serviceInterest:aiReply.serviceInterest??existingFlowState.service_interest,
@@ -4179,13 +4100,27 @@ async function handleEc10AiConversation(
         aiStateSynchronizedAt:new Date().toISOString()
       }});
   }
-  const qualifiesForMeeting = isAiLeadQualifiedForMeeting(aiReply);
-  const ericAudioPath = qualifiesForMeeting || clientState.athlete_age
+  const synchronizedMetadata = {
+    ...leadMetadata,
+    ...(aiReply.responsibleName ? { responsibleName: aiReply.responsibleName } : {}),
+    ...(aiReply.athleteName ? { athleteName: aiReply.athleteName } : {}),
+  };
+  const bookingContactName = selectBookingContactName({
+    metadata: synchronizedMetadata,
+    minor: Boolean(aiReply.athleteAge && aiReply.athleteAge < 18),
+    responsibleRole: aiReply.speakerRole === "responsavel",
+  });
+  const qualifiesForMeeting = existingFlowState.stage !== "completed"
+    && existingFlowState.stage !== "awaiting_booking_completion"
+    && Boolean(bookingContactName)
+    && isAiLeadQualifiedForMeeting(aiReply);
+  const sentEricAudioPaths = Array.isArray(leadMetadata.ericAiAudioPathsSent)
+    ? leadMetadata.ericAiAudioPathsSent.filter((item): item is string => typeof item === "string")
+    : [];
+  const ericAudioPath = qualifiesForMeeting
     ? null
-    : selectEricAudioPathForAiReply(aiReply);
-  const ericAudioSent = ericAudioPath
-    ? await sendBotAudio(client, chatId, clientState.id, ericAudioPath)
-    : false;
+    : selectEricAudioPathForAiReply(aiReply, sentEricAudioPaths);
+  let ericAudioSent = false;
   await updateClientAiProfile({
     clientId: clientState.id,
     responsibleName: aiReply.responsibleName,
@@ -4214,27 +4149,30 @@ async function handleEc10AiConversation(
   });
   await sendBotText(client, chatId, clientState.id, aiReply.reply, [500, 1000]);
 
-  if (!existingFlowState && !aiReply.athleteAge && !clientState.athlete_age) {
+  ericAudioSent = ericAudioPath
+    ? await sendBotAudio(client, chatId, clientState.id, ericAudioPath)
+    : false;
+
+  if (ericAudioSent && ericAudioPath) {
+    const latestState = await getBotConversationState(clientState.phone) ?? existingFlowState;
     await persistEc10State({
       clientId: clientState.id,
       phone: clientState.phone,
-      previous: null,
-      stage: "awaiting_age",
-      roleAnswer: aiReply.speakerRole,
-      athleteAge: null,
-      ageGroup: null,
-      serviceInterest: aiReply.serviceInterest,
-      completedAt: null,
+      previous: latestState,
+      stage: latestState.stage,
       metadata: {
-        source: "groq_ai_sdr",
-        flowVersion: "eric_2026_09_14",
-        ageQuestionAskedAt: new Date().toISOString(),
-        structuredAgeCaptureStarted: true,
-        ...(aiReply.responsibleName?{responsibleName:aiReply.responsibleName}:{}),
-        ...(aiReply.athleteName?{athleteName:aiReply.athleteName}:{})
-      }
+        ericAiAudioPathsSent: [...new Set([...sentEricAudioPaths, ericAudioPath])],
+        ericAiLastAudioSentAt: new Date().toISOString(),
+      },
     });
   }
+
+  const bookingIntent = bookingMessageIntent(body);
+  const existingBookingUrl = typeof leadMetadata.bookingUrl === "string" ? leadMetadata.bookingUrl : null;
+  if (existingBookingUrl && (bookingIntent === "link" || bookingIntent === "reschedule")) {
+    await sendBotText(client, chatId, clientState.id, existingBookingUrl, [250, 500]);
+  }
+
   await recordTrafficEvent({
     clientId: clientState.id,
     phone: clientState.phone,
@@ -4296,7 +4234,7 @@ async function handleEc10AiConversation(
       serviceInterest: aiReply.serviceInterest,
       completedAt: null,
       metadata: {
-        source: "groq_ai_sdr",
+        source: "gustavo_ai_sdr",
         aiQualifiedAt: new Date().toISOString(),
         qualificationReason: aiReply.qualificationReason,
         guardianConfirmed: aiReply.guardianConfirmed,
@@ -4305,7 +4243,7 @@ async function handleEc10AiConversation(
       },
     });
     await appendClientTags(clientState.id, ["ia_qualificado", "ia_agendamento_iniciado"]);
-    await askMeetingDate(client, chatId, clientState.id, clientState.phone, schedulingState);
+    await askMeetingDate(client, chatId, clientState.id, clientState.phone, schedulingState, { aiLed: true });
   }
   return true;
 }
@@ -4317,13 +4255,8 @@ async function handleGustavoPrimaryRoute(
   body:string|null,
   mediaType="text",
 ) {
-  const schedulingState = await getBotConversationState(clientState.phone);
-  if (schedulingState?.metadata?.professionalAiSdr===true && schedulingState.stage==='awaiting_interest') {
-    return handleEc10AiConversation(client,chatId,clientState,body,mediaType);
-  }
-  if (schedulingState && schedulingState.stage !== "completed") {
-    return handleEc10Conversation(client,chatId,clientState.id,clientState.phone,body,mediaType);
-  }
+  // Gustavo/Gemini owns every customer-facing turn. Deterministic code is limited
+  // to invisible state, safety checks, media delivery and booking-link creation.
   return handleEc10AiConversation(client,chatId,clientState,body,mediaType);
 }
 

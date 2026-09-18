@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { config } from "./config.js";
 import { fetchEc10LearningBase } from './store.js';
-import { learningPrompt, exactLearningReply, conversationRole, singleQuestionReply } from './ec10-learning.mjs';
+import { learningPrompt, conversationRole, singleQuestionReply } from './ec10-learning.mjs';
 import { eligibleSdrOffers, sanitizeSdrAiAnswer, sdrSafeAnswer, type SdrOffer, type SdrStep } from './sdr-flow.js';
 import {
   buildMeetingDateOptions,
@@ -138,16 +138,30 @@ export function isAiLeadQualifiedForMeeting(reply: AiSalesReply) {
     && reply.investmentReadiness !== "nao_explorado";
 }
 
-export function selectEricAudioPathForAiReply(reply: AiSalesReply) {
+export function selectEricAudioPathForAiReply(reply: AiSalesReply, alreadySent: string[] = []) {
   if (!reply.ericAudioRecommended || !reply.athleteAge) return null;
   if (reply.handoffRequested || reply.meetingRequested || reply.qualificationStatus === "unqualified") return null;
   if (reply.serviceInterest === "libertacademy_florianopolis" || reply.serviceInterest === "academy_sudamerica") return null;
-  if (reply.serviceInterest === "mentoria_prime") return "media/audio/mentoria-prime/01_apresentacao_eric.ogg";
-  if (reply.athleteAge <= 13) return "media/audio/ec10/eric-2026-09-14/01_8-13_apresentacao.ogg";
-  if (reply.athleteAge < 18) return "media/audio/ec10/eric-2026-09-14/04_14-19_apresentacao.ogg";
-  if (reply.athleteAge <= 19) return null;
-  if (reply.athleteAge <= 25) return "media/audio/ec10/eric-2026-09-14/06_20-25_plano-internacional.ogg";
-  return null;
+  const candidates = reply.serviceInterest === "mentoria_prime"
+    ? ["media/audio/mentoria-prime/01_apresentacao_eric.ogg"]
+    : reply.serviceInterest === "plano_carreira" && reply.athleteAge <= 13
+      ? [
+          "media/audio/ec10/eric-2026-09-14/01_8-13_apresentacao.ogg",
+          "media/audio/ec10/eric-2026-09-14/02_8-13_plano-de-carreira.ogg",
+        ]
+      : (reply.serviceInterest === "eurocamp" || reply.serviceInterest === "eurocamp_latam") && reply.athleteAge >= 14 && reply.athleteAge < 18
+        ? [
+            "media/audio/ec10/eric-2026-09-14/04_14-19_apresentacao.ogg",
+            "media/audio/ec10/eric-2026-09-14/05_14-19_eurocamp.ogg",
+          ]
+        : reply.serviceInterest === "plano_internacional" && reply.athleteAge <= 25
+          ? ["media/audio/ec10/eric-2026-09-14/06_20-25_plano-internacional.ogg"]
+          : reply.athleteAge <= 13
+            ? ["media/audio/ec10/eric-2026-09-14/01_8-13_apresentacao.ogg"]
+            : reply.athleteAge < 18
+              ? ["media/audio/ec10/eric-2026-09-14/04_14-19_apresentacao.ogg"]
+              : [];
+  return candidates.find((audioPath) => !alreadySent.includes(audioPath)) ?? null;
 }
 
 const ec10SalesKnowledge = {
@@ -299,7 +313,9 @@ export async function generateEc10SalesReplyWithAi(input: {
     "Antes de abrir a agenda, explique o serviço compatível de forma concreta e confirme que a principal dúvida do lead foi respondida.",
     "Se o lead mudar de assunto, fizer uma pergunta ou não aceitar a reunião, responda exatamente ao que ele perguntou, trate a objeção e faça uma ponte natural de volta. Nunca encerre por hesitação, silêncio, preço, falta de tempo ou pedido de mais explicações.",
     "Use alternativas consultivas: ofereça explicar o que está incluído, entender a dificuldade, mostrar o próximo passo ou então marcar a reunião. Não repita a mesma frase nem pressione.",
+    "Não use como resposta genérica a frase 'A EC10 começa pelo planejamento da carreira, respeitando o momento do atleta e da família'. Explique de modo específico ao que a pessoa acabou de dizer.",
     "Se aceitar claramente a reunião, confirme meetingRequested=true para abrir a seleção real de data e horário. Pedir explicação, preço ou detalhes não é aceite de reunião.",
+    "Antes de marcar qualificationStatus=qualified e meetingRequested=true, confirme também o nome completo de quem participará da reunião. Para menor, use responsibleName com o nome completo do pai, mãe ou responsável legal. Para adulto que decide por si, use athleteName com o nome completo. O sistema cria e envia o link oficial automaticamente; não invente nem escreva URL.",
     "A abertura já foi conduzida de forma natural antes desta etapa. Não recite 'Bem-vindo à EC10 Talentos', não reinicie a conversa e não se apresente como assistente virtual espontaneamente. Continue a partir do que o lead acabou de dizer. Se perguntarem se você é IA ou bot, responda com transparência que o atendimento é automatizado.",
     "Nunca diga que é humana. Nunca prometa aprovação, contrato, vaga, teste, clube ou resultado.",
     "Nunca informe valores, faixas de preço, descontos ou parcelas no WhatsApp. Valores são apresentados somente na reunião. Nunca invente data, endereço, clube, benefício ou link.",
@@ -391,13 +407,13 @@ export async function generateEc10SalesReplyWithAi(input: {
     ? value.replace(/\s+/g, " ").trim().slice(0, limit)
     : "";
 
-  const learned = exactLearningReply(supervised, {stage:input.learningStage || 'diagnosing',
-    age, role:speakerRole === 'unknown' ? 'outro' : speakerRole, message:input.message});
-  if (learned && parsed?.intent !== 'human' && !isExplicitStopRequest(input.message || '')) reply = learned.reply;
   if(age&&age<18&&speakerRole==='responsavel'&&/nome completo d[oa]\s+(?!respons[aá]vel)/i.test(reply)) {
     reply='Para a agenda, preciso do seu nome completo como responsável que participará da reunião. Qual é?';
   }
-  reply = singleQuestionReply(reply,{age,role:speakerRole});
+  const repeatedBoilerplate = "A EC10 começa pelo planejamento da carreira, respeitando o momento do atleta e da família.";
+  if (normalizePortugueseText(reply) === normalizePortugueseText(repeatedBoilerplate)) return null;
+  reply = singleQuestionReply(reply,{age,role:speakerRole,fallback:""});
+  if (!reply) return null;
 
   return {
     reply,
@@ -788,22 +804,31 @@ function canUseGroq(kind: "text" | "audio") {
 
 async function callTextAi(prompt: string, maxOutputTokens: number) {
   for (const provider of preferredTextProviders()) {
-    if (provider === "groq") {
-      const response = await callGroqText(prompt, maxOutputTokens);
+    const startedAt = Date.now();
+    try {
+      const response = provider === "groq"
+        ? await callGroqText(prompt, maxOutputTokens)
+        : provider === "ollama"
+          ? await callOllamaText(prompt, maxOutputTokens)
+          : await callGemini(config.GEMINI_MODEL, [{ text: prompt }], maxOutputTokens);
+      console.info(JSON.stringify({
+        event: "ai_text_provider_result",
+        provider,
+        ok: Boolean(response),
+        durationMs: Date.now() - startedAt
+      }));
       if (response) return response;
-      continue;
+    } catch (error) {
+      console.warn(JSON.stringify({
+        event: "ai_text_provider_error",
+        provider,
+        durationMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : "provider_failed"
+      }));
     }
-
-    if (provider === "ollama") {
-      const response = await callOllamaText(prompt, maxOutputTokens);
-      if (response) return response;
-      continue;
-    }
-
-    const response = await callGemini(config.GEMINI_MODEL, [{ text: prompt }], maxOutputTokens);
-    if (response) return response;
   }
 
+  console.warn(JSON.stringify({ event: "ai_text_all_providers_failed" }));
   return "";
 }
 
