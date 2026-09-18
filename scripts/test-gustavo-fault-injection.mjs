@@ -52,8 +52,9 @@ for (const unsafe of [
 const indexSource = fs.readFileSync("apps/bot/src/index.ts", "utf8");
 const aiSource = fs.readFileSync("apps/bot/src/ai.ts", "utf8");
 const primaryRouteSource = indexSource.match(/async function handleGustavoPrimaryRoute[\s\S]*?\n}\n\nasync function saveGustavoRecoveryPatch/)?.[0] || "";
-assert.match(primaryRouteSource, /return handleEc10AiConversation\(/);
-assert.doesNotMatch(primaryRouteSource, /handleEc10Conversation\(/);
+assert.match(primaryRouteSource, /handleGustavoMandatorySequence\(/);
+assert.match(primaryRouteSource, /withSdrCustomerTurn\(/);
+assert.match(primaryRouteSource, /awaiting_booking_completion/);
 assert.doesNotMatch(primaryRouteSource, /handleEc10SdrTurn\(/);
 assert.doesNotMatch(aiSource, /exactLearningReply/);
 assert.match(aiSource, /ai_text_provider_result/);

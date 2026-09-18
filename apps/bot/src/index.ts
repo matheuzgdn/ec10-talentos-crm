@@ -9,6 +9,7 @@ import { normalizePhone, resolveBrazilTrafficGeo } from "@crm/shared";
 import {
   classifyFoundationStatusWithAi,
   classifyInterestWithAi,
+  answerGustavoSequenceQuestion,
   extractAthleteAgeWithAi,
   generateEc10SalesReplyWithAi,
   isAiLeadQualifiedForMeeting,
@@ -27,6 +28,25 @@ import { conversationRole } from './ec10-learning.mjs';
 import { sendMetaQualityEvent } from "./meta.js";
 import { normalizePollVote, pollParentId, pollVoteMessageId, readWhatsAppPollVotes, serializeWhatsAppKey } from './poll-votes.js';
 import {parseBookingContactName,selectBookingContactName} from './booking-contact.js';
+import {
+  GUSTAVO_SEQUENCE_VERSION,
+  extractExplicitGustavoAge,
+  extractGustavoSelfName,
+  gustavoAgePrompt,
+  gustavoCareerAudios,
+  gustavoIdentityPrompt,
+  gustavoOpeningMessage,
+  gustavoPendingQuestion,
+  gustavoPlanIntroduction,
+  hasGustavoMeetingIntent,
+  normalizeGustavoSequencePhase,
+  parseGustavoFamiliarity,
+  parseGustavoRole,
+  parseGustavoYesNo,
+  type GustavoSequenceIdentity,
+  type GustavoSequencePhase,
+  type GustavoSpeakerRole,
+} from './gustavo-sequence.js';
 import {
   buildMeetingConfirmationMessage,
   buildMeetingDateOptions,
@@ -4248,6 +4268,356 @@ async function handleEc10AiConversation(
   return true;
 }
 
+function gustavoSequenceMetadata(state:BotConversationState|null) {
+  return asMetadataRecord(state?.metadata);
+}
+
+function gustavoStoredRole(state:BotConversationState|null,clientState:ClientAutomationState):GustavoSpeakerRole|null {
+  if(state?.role_answer==='atleta'||state?.role_answer==='responsavel')return state.role_answer;
+  const metadata=gustavoSequenceMetadata(state);
+  if(metadata.speakerRole==='atleta'||metadata.speakerRole==='responsavel')return metadata.speakerRole;
+  const ai=asMetadataRecord(clientState.attribution_metadata?.ai_sdr);
+  return ai.speakerRole==='atleta'||ai.speakerRole==='responsavel'?ai.speakerRole:null;
+}
+
+function gustavoStoredName(state:BotConversationState|null,clientState:ClientAutomationState) {
+  const metadata=gustavoSequenceMetadata(state);
+  const ai=asMetadataRecord(clientState.attribution_metadata?.ai_sdr);
+  const role=gustavoStoredRole(state,clientState);
+  const values=role==='responsavel'
+    ? [metadata.responsibleName,ai.responsibleName,metadata.leadName,clientState.name,metadata.athleteName,ai.athleteName]
+    : role==='atleta'
+      ? [metadata.athleteName,ai.athleteName,metadata.leadName,clientState.name,metadata.responsibleName,ai.responsibleName]
+      : [metadata.leadName,clientState.name,metadata.responsibleName,ai.responsibleName,metadata.athleteName,ai.athleteName];
+  return values.find(value=>typeof value==='string'&&value.trim())?.toString().trim()||null;
+}
+
+function gustavoIsRegistered(state:BotConversationState|null,clientState:ClientAutomationState) {
+  const metadata=gustavoSequenceMetadata(state);
+  return Boolean(
+    state
+    || clientState.source==='site'
+    || clientState.athlete_age
+    || clientState.attribution_metadata
+    || clientState.tags?.some(tag=>/lead_page|plano_carreira_bot_ativo|campanha/i.test(tag))
+    || metadata.crmRegistered===true
+  );
+}
+
+function gustavoIdentity(state:BotConversationState|null,clientState:ClientAutomationState):GustavoSequenceIdentity {
+  return {
+    registered:gustavoIsRegistered(state,clientState),
+    leadName:gustavoStoredName(state,clientState),
+    role:gustavoStoredRole(state,clientState),
+    athleteAge:state?.athlete_age??clientState.athlete_age??null,
+  };
+}
+
+function gustavoAgeGroup(age:number|null) {
+  if(!age)return null;
+  return age<=13?'8-13':age<=19?'14-19':age<=25?'20-25':'26-plus';
+}
+
+async function persistGustavoSequence(input:{
+  clientState:ClientAutomationState;
+  previous:BotConversationState|null;
+  phase:GustavoSequencePhase;
+  role?:GustavoSpeakerRole|null;
+  athleteAge?:number|null;
+  metadata?:Record<string,unknown>;
+}) {
+  const role=input.role===undefined?gustavoStoredRole(input.previous,input.clientState):input.role;
+  const athleteAge=input.athleteAge===undefined?(input.previous?.athlete_age??input.clientState.athlete_age??null):input.athleteAge;
+  return persistEc10State({
+    clientId:input.clientState.id,
+    phone:input.clientState.phone,
+    previous:input.previous,
+    stage:input.phase==='booking'?'awaiting_booking_completion':athleteAge?'awaiting_interest':'awaiting_age',
+    roleAnswer:role,
+    athleteAge,
+    ageGroup:gustavoAgeGroup(athleteAge),
+    serviceInterest:'plano_carreira',
+    completedAt:null,
+    metadata:{
+      source:'gustavo_mandatory_sequence',
+      professionalAiSdr:true,
+      sdrPersona:'gustavo',
+      sdrActiveEngine:'gustavo_sequence_with_gemini_answers',
+      gustavoSequenceVersion:GUSTAVO_SEQUENCE_VERSION,
+      gustavoSequencePhase:input.phase,
+      ...(input.metadata??{}),
+    },
+  });
+}
+
+async function answerAndResumeGustavoSequence(input:{
+  client:any;chatId:string;clientState:ClientAutomationState;state:BotConversationState;
+  phase:GustavoSequencePhase;identity:GustavoSequenceIdentity;body:string|null;
+}) {
+  const history=await fetchRecentClientMessages(input.clientState.id,8);
+  const answer=await answerGustavoSequenceQuestion({
+    message:input.body,
+    athleteAge:input.identity.athleteAge,
+    speakerRole:input.identity.role,
+    phase:input.phase,
+    history,
+  });
+  const pending=gustavoPendingQuestion(input.phase,input.identity);
+  await persistGustavoSequence({clientState:input.clientState,previous:input.state,phase:input.phase,
+    metadata:{gustavoLastDetourAt:new Date().toISOString()}});
+  await sendBotText(input.client,input.chatId,input.clientState.id,[answer,pending].filter(Boolean).join('\n\n'),[450,900]);
+  return true;
+}
+
+async function deliverGustavoCareerAudios(input:{
+  client:any;chatId:string;clientState:ClientAutomationState;state:BotConversationState;identity:GustavoSequenceIdentity;
+}) {
+  const metadata=gustavoSequenceMetadata(input.state);
+  const sentPaths=Array.isArray(metadata.ericAiAudioPathsSent)
+    ? metadata.ericAiAudioPathsSent.filter((item):item is string=>typeof item==='string')
+    : [];
+  let state=await persistGustavoSequence({
+    clientState:input.clientState,
+    previous:input.state,
+    phase:'audio_delivery',
+    role:input.identity.role,
+    athleteAge:input.identity.athleteAge,
+    metadata:{
+      guardianConfirmed:input.identity.role==='responsavel'&&Boolean(input.identity.athleteAge&&input.identity.athleteAge<18),
+      audioSequenceInProgress:true,
+      audioSequenceStartedAt:new Date().toISOString(),
+    },
+  })??input.state;
+  await updateClientAiProfile({
+    clientId:input.clientState.id,
+    serviceInterest:'plano_carreira',
+    athleteAge:input.identity.athleteAge,
+    speakerRole:input.identity.role??'unknown',
+    guardianConfirmed:input.identity.role==='responsavel'&&Boolean(input.identity.athleteAge&&input.identity.athleteAge<18),
+    leadTemperature:'morno',
+  });
+  await sendBotText(input.client,input.chatId,input.clientState.id,gustavoPlanIntroduction(input.identity.athleteAge),[450,900]);
+  const delivered=[...sentPaths];
+  for(const [index,item] of gustavoCareerAudios(input.identity.athleteAge).entries()) {
+    if(delivered.includes(item.audioPath))continue;
+    const sent=await sendBotAudio(input.client,input.chatId,input.clientState.id,item.audioPath);
+    if(sent)delivered.push(item.audioPath);
+    if(index<1)await naturalPause(1400,2400);
+  }
+  state=await persistGustavoSequence({
+    clientState:input.clientState,
+    previous:await getBotConversationState(input.clientState.phone)??state,
+    phase:'audio_confirmation',
+    role:input.identity.role,
+    athleteAge:input.identity.athleteAge,
+    metadata:{
+      ericAiAudioPathsSent:[...new Set(delivered)],
+      ericAiLastAudioSentAt:new Date().toISOString(),
+      audioSequenceInProgress:false,
+      audioSequenceFinishedAt:new Date().toISOString(),
+    },
+  })??state;
+  await naturalPause(2600,4200);
+  await sendBotText(input.client,input.chatId,input.clientState.id,gustavoPendingQuestion('audio_confirmation',gustavoIdentity(state,input.clientState)),[350,700]);
+  return true;
+}
+
+async function openGustavoBooking(input:{
+  client:any;chatId:string;clientState:ClientAutomationState;state:BotConversationState;identity:GustavoSequenceIdentity;
+}) {
+  const minor=Boolean(input.identity.athleteAge&&input.identity.athleteAge<18);
+  if(minor&&input.identity.role!=='responsavel') {
+    await persistGustavoSequence({clientState:input.clientState,previous:input.state,phase:'guardian_wait',
+      role:'atleta',athleteAge:input.identity.athleteAge,metadata:{guardianConfirmed:false,guardianRequestedAt:new Date().toISOString()}});
+    await sendBotText(input.client,input.chatId,input.clientState.id,
+      'Como o atleta e menor de idade, o pai, a mae ou o responsavel legal precisa participar da decisao e fazer o agendamento. Ele pode continuar esta conversa por aqui e se identificar?',[450,900]);
+    return true;
+  }
+  const metadata=gustavoSequenceMetadata(input.state);
+  const bookingContactName=selectBookingContactName({metadata,minor,responsibleRole:input.identity.role==='responsavel'});
+  if(!bookingContactName) {
+    await persistGustavoSequence({clientState:input.clientState,previous:input.state,phase:'booking_name',
+      role:input.identity.role,athleteAge:input.identity.athleteAge,
+      metadata:{guardianConfirmed:minor&&input.identity.role==='responsavel'}});
+    await sendBotText(input.client,input.chatId,input.clientState.id,
+      minor?'Pra deixar a reuniao no nome certo, qual e o seu nome completo como responsavel?':'Pra deixar a reuniao no nome certo, qual e o seu nome completo?',[450,900]);
+    return true;
+  }
+  const ready=await persistGustavoSequence({clientState:input.clientState,previous:input.state,phase:'booking',
+    role:input.identity.role,athleteAge:input.identity.athleteAge,
+    metadata:{bookingContactName,guardianConfirmed:minor&&input.identity.role==='responsavel',meetingInterestConfirmedAt:new Date().toISOString()}})??input.state;
+  await appendClientTags(input.clientState.id,['ia_qualificado','ia_agendamento_iniciado','plano_carreira']);
+  await askMeetingDate(input.client,input.chatId,input.clientState.id,input.clientState.phone,ready,{aiLed:true});
+  return true;
+}
+
+async function handleGustavoMandatorySequence(
+  client:any,
+  chatId:string,
+  clientState:ClientAutomationState,
+  body:string|null,
+  _mediaType='text',
+) {
+  let state=await getBotConversationState(clientState.phone);
+  if(explicitSdrStop(body)) {
+    await appendClientTags(clientState.id,['ia_atendimento_encerrado']);
+    await sendBotText(client,chatId,clientState.id,'Tudo certo. Vou encerrar o atendimento automático por aqui. Se quiser retomar depois, é só chamar.',[350,650]);
+    await updateClientAiProfile({clientId:clientState.id,automationPauseRequested:true});
+    return true;
+  }
+  if(explicitSdrHuman(body)) {
+    await appendClientTags(clientState.id,['aguardando_vendedor']);
+    await sendBotText(client,chatId,clientState.id,'Combinado. Vou deixar a conversa com a nossa equipe comercial a partir daqui.',[350,650]);
+    await updateClientAiProfile({clientId:clientState.id,handoffRequested:true});
+    return true;
+  }
+  const incomingRole=parseGustavoRole(body);
+  const incomingAge=extractExplicitGustavoAge(body);
+  const incomingName=extractGustavoSelfName(body);
+  if(!state||gustavoSequenceMetadata(state).gustavoSequenceVersion!==GUSTAVO_SEQUENCE_VERSION) {
+    const initialRole=incomingRole??gustavoStoredRole(state,clientState);
+    const initialAge=incomingAge??state?.athlete_age??clientState.athlete_age??null;
+    const knownName=incomingName??gustavoStoredName(state,clientState);
+    state=await persistGustavoSequence({clientState,previous:state,phase:'company_familiarity',role:initialRole,athleteAge:initialAge,
+      metadata:{
+        sequenceStartedAt:new Date().toISOString(),
+        crmRegistered:gustavoIsRegistered(state,clientState),
+        ...(knownName?{leadName:knownName}:{}),
+        ...(incomingName?{capturedSelfName:incomingName}:{}),
+      }})??state;
+    if(!state)throw new Error('gustavo_sequence_state_unavailable');
+    await sendBotText(client,chatId,clientState.id,gustavoOpeningMessage(gustavoIdentity(state,clientState)),[450,900]);
+    return true;
+  }
+
+  let identity=gustavoIdentity(state,clientState);
+  if(incomingRole||incomingAge||incomingName) {
+    const nextRole=incomingRole??identity.role;
+    const nextAge=incomingAge??identity.athleteAge;
+    const namePatch=incomingName
+      ? nextRole==='responsavel'?{responsibleName:incomingName,leadName:incomingName,capturedSelfName:incomingName}
+        :nextRole==='atleta'?{athleteName:incomingName,leadName:incomingName,capturedSelfName:incomingName}
+          :{leadName:incomingName,capturedSelfName:incomingName}
+      :{};
+    state=await persistGustavoSequence({clientState,previous:state,
+      phase:normalizeGustavoSequencePhase(gustavoSequenceMetadata(state).gustavoSequencePhase)??'company_familiarity',
+      role:nextRole,athleteAge:nextAge,metadata:namePatch})??state;
+    identity=gustavoIdentity(state,clientState);
+  }
+
+  const phase=normalizeGustavoSequencePhase(gustavoSequenceMetadata(state).gustavoSequencePhase)??'company_familiarity';
+  if(phase==='company_familiarity') {
+    const familiarity=parseGustavoFamiliarity(body);
+    if(familiarity===null)return answerAndResumeGustavoSequence({client,chatId,clientState,state,phase,identity,body});
+    const nextPhase: GustavoSequencePhase=identity.role?'identity_confirmation':'identity';
+    state=await persistGustavoSequence({clientState,previous:state,phase:nextPhase,
+      metadata:{companyFamiliarity:familiarity,companyFamiliarityConfirmedAt:new Date().toISOString()}})??state;
+    identity=gustavoIdentity(state,clientState);
+    await sendBotText(client,chatId,clientState.id,gustavoIdentityPrompt(identity),[450,900]);
+    return true;
+  }
+
+  if(phase==='identity_confirmation') {
+    const explicitRole=parseGustavoRole(body);
+    const confirmation=parseGustavoYesNo(body);
+    if(explicitRole)identity={...identity,role:explicitRole};
+    else if(confirmation===false) {
+      await persistGustavoSequence({clientState,previous:state,phase:'identity',role:null,metadata:{storedIdentityRejectedAt:new Date().toISOString()}});
+      await sendBotText(client,chatId,clientState.id,gustavoIdentityPrompt({...identity,role:null}),[450,900]);
+      return true;
+    } else if(confirmation!==true) {
+      return answerAndResumeGustavoSequence({client,chatId,clientState,state,phase,identity,body});
+    }
+    state=await persistGustavoSequence({clientState,previous:state,phase:identity.athleteAge?'audio_delivery':'age',
+      role:identity.role,athleteAge:identity.athleteAge,
+      metadata:{identityConfirmedAt:new Date().toISOString(),guardianConfirmed:identity.role==='responsavel'&&Boolean(identity.athleteAge&&identity.athleteAge<18)}})??state;
+    identity=gustavoIdentity(state,clientState);
+    if(!identity.athleteAge) {
+      await sendBotText(client,chatId,clientState.id,gustavoAgePrompt(identity.role),[450,900]);
+      return true;
+    }
+    return deliverGustavoCareerAudios({client,chatId,clientState,state,identity});
+  }
+
+  if(phase==='identity') {
+    const role=parseGustavoRole(body);
+    if(!role)return answerAndResumeGustavoSequence({client,chatId,clientState,state,phase,identity,body});
+    state=await persistGustavoSequence({clientState,previous:state,phase:identity.athleteAge?'audio_delivery':'age',role,
+      metadata:{identityConfirmedAt:new Date().toISOString(),guardianConfirmed:role==='responsavel'&&Boolean(identity.athleteAge&&identity.athleteAge<18)}})??state;
+    identity=gustavoIdentity(state,clientState);
+    if(!identity.athleteAge) {
+      await sendBotText(client,chatId,clientState.id,gustavoAgePrompt(role),[450,900]);
+      return true;
+    }
+    return deliverGustavoCareerAudios({client,chatId,clientState,state,identity});
+  }
+
+  if(phase==='age') {
+    const age=extractExplicitGustavoAge(body);
+    if(!age)return answerAndResumeGustavoSequence({client,chatId,clientState,state,phase,identity,body});
+    if(age<8) {
+      await persistGustavoSequence({clientState,previous:state,phase:'age',athleteAge:null,metadata:{underMinimumAgeReported:age}});
+      await appendClientTags(clientState.id,['aguardando_vendedor']);
+      await sendBotText(client,chatId,clientState.id,'O Plano de Carreira da EC10 atende atletas a partir de 8 anos. Quando ele completar 8, pode me chamar por aqui que eu retomo o atendimento.',[450,900]);
+      return true;
+    }
+    state=await persistGustavoSequence({clientState,previous:state,phase:'audio_delivery',role:identity.role,athleteAge:age,
+      metadata:{ageConfirmedAt:new Date().toISOString(),guardianConfirmed:identity.role==='responsavel'&&age<18}})??state;
+    identity=gustavoIdentity(state,clientState);
+    return deliverGustavoCareerAudios({client,chatId,clientState,state,identity});
+  }
+
+  if(phase==='audio_delivery')return deliverGustavoCareerAudios({client,chatId,clientState,state,identity});
+
+  if(phase==='audio_confirmation') {
+    const heard=parseGustavoYesNo(body);
+    if(heard===null)return answerAndResumeGustavoSequence({client,chatId,clientState,state,phase,identity,body});
+    if(!heard) {
+      await sendBotText(client,chatId,clientState.id,'Sem problema. Os audios ficaram acima. Quando terminar, me avise com “ouvi” e eu continuo daqui.',[450,900]);
+      return true;
+    }
+    if(hasGustavoMeetingIntent(body))return openGustavoBooking({client,chatId,clientState,state,identity});
+    await persistGustavoSequence({clientState,previous:state,phase:'meeting_interest',metadata:{audioListeningConfirmedAt:new Date().toISOString()}});
+    await sendBotText(client,chatId,clientState.id,gustavoPendingQuestion('meeting_interest',identity),[450,900]);
+    return true;
+  }
+
+  if(phase==='meeting_interest') {
+    const interest=parseGustavoYesNo(body);
+    if(interest===null&&!hasGustavoMeetingIntent(body))return answerAndResumeGustavoSequence({client,chatId,clientState,state,phase,identity,body});
+    if(interest===false) {
+      await sendBotText(client,chatId,clientState.id,'Tudo certo. Se mudar de ideia, me chama por aqui que eu retomo exatamente deste ponto.',[450,900]);
+      await appendClientTags(clientState.id,['aguardando_vendedor']);
+      return true;
+    }
+    return openGustavoBooking({client,chatId,clientState,state,identity});
+  }
+
+  if(phase==='guardian_wait') {
+    const role=parseGustavoRole(body);
+    if(role!=='responsavel')return answerAndResumeGustavoSequence({client,chatId,clientState,state,phase,identity,body});
+    const name=incomingName??parseBookingContactName(body);
+    state=await persistGustavoSequence({clientState,previous:state,phase:name?'booking':'booking_name',role:'responsavel',
+      metadata:{guardianConfirmed:true,guardianConfirmedAt:new Date().toISOString(),...(name?{responsibleName:name,bookingContactName:name}: {})}})??state;
+    identity=gustavoIdentity(state,clientState);
+    if(name)return openGustavoBooking({client,chatId,clientState,state,identity});
+    await sendBotText(client,chatId,clientState.id,'Obrigado. Qual é o seu nome completo como responsável que participará da reunião?',[450,900]);
+    return true;
+  }
+
+  if(phase==='booking_name') {
+    const name=parseBookingContactName(body);
+    if(!name)return answerAndResumeGustavoSequence({client,chatId,clientState,state,phase,identity,body});
+    const minor=Boolean(identity.athleteAge&&identity.athleteAge<18);
+    state=await persistGustavoSequence({clientState,previous:state,phase:'booking',role:identity.role,athleteAge:identity.athleteAge,
+      metadata:{bookingContactName:name,...(identity.role==='responsavel'?{responsibleName:name}:{athleteName:name}),guardianConfirmed:minor&&identity.role==='responsavel'}})??state;
+    identity=gustavoIdentity(state,clientState);
+    return openGustavoBooking({client,chatId,clientState,state,identity});
+  }
+
+  return openGustavoBooking({client,chatId,clientState,state,identity});
+}
+
 async function handleGustavoPrimaryRoute(
   client:any,
   chatId:string,
@@ -4255,9 +4625,11 @@ async function handleGustavoPrimaryRoute(
   body:string|null,
   mediaType="text",
 ) {
-  // Gustavo/Gemini owns every customer-facing turn. Deterministic code is limited
-  // to invisible state, safety checks, media delivery and booking-link creation.
-  return handleEc10AiConversation(client,chatId,clientState,body,mediaType);
+  const state=await getBotConversationState(clientState.phone);
+  if(state&&['awaiting_meeting_date','awaiting_meeting_time','awaiting_booking_completion'].includes(state.stage)) {
+    return handleEc10ConversationInternal(client,chatId,clientState.id,clientState.phone,body,mediaType);
+  }
+  return withSdrCustomerTurn(clientState.id,clientState.phone,()=>handleGustavoMandatorySequence(client,chatId,clientState,body,mediaType));
 }
 
 async function saveGustavoRecoveryPatch(state:BotConversationState,patch:Record<string,unknown>) {

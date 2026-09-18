@@ -30,6 +30,7 @@ export type ClientAutomationState = {
   id: string;
   bot_instance_id: string;
   phone: string;
+  name: string | null;
   bot_paused: boolean;
   tags: string[];
   source: "whatsapp" | "manual" | "indicacao" | "site";
@@ -645,8 +646,8 @@ async function findClientByPhoneCandidates(database: Pool, phone: string) {
   const candidates = phoneLookupCandidates(phone);
   const { rows } = await database.query<ClientAutomationState>(
     `
-      select id, bot_instance_id, phone, bot_paused, tags,
-             source, service_interest, traffic_source, utm_source, utm_campaign, fbclid, attribution_metadata
+      select id, bot_instance_id, phone, name, bot_paused, tags,
+             source, service_interest, athlete_age, traffic_source, utm_source, utm_campaign, fbclid, attribution_metadata
       from public.clients
       where phone = any($1::text[])
       order by
@@ -926,8 +927,8 @@ export async function upsertInboundMessage(input: {
                     last_message_at = now(),
                     updated_at = now()
                 where id = $1
-                returning id, bot_instance_id, phone, bot_paused, tags,
-                          source, service_interest, traffic_source, utm_source, utm_campaign, fbclid, attribution_metadata
+                returning id, bot_instance_id, phone, name, bot_paused, tags,
+                          source, service_interest, athlete_age, traffic_source, utm_source, utm_campaign, fbclid, attribution_metadata
               `,
               [existingMessage.client_id, input.name ?? null]
             );
@@ -976,8 +977,8 @@ export async function upsertInboundMessage(input: {
 
       const existingClient = await connection.query<ClientAutomationState>(
         `
-          select id, bot_instance_id, phone, bot_paused, tags,
-                 source, service_interest, traffic_source, utm_source, utm_campaign, fbclid, attribution_metadata
+          select id, bot_instance_id, phone, name, bot_paused, tags,
+                 source, service_interest, athlete_age, traffic_source, utm_source, utm_campaign, fbclid, attribution_metadata
           from public.clients
           where phone = any($1::text[])
           order by
@@ -999,8 +1000,8 @@ export async function upsertInboundMessage(input: {
                   last_message_at = now(),
                   updated_at = now()
               where id = $1
-              returning id, bot_instance_id, phone, bot_paused, tags,
-                        source, service_interest, traffic_source, utm_source, utm_campaign, fbclid, attribution_metadata
+              returning id, bot_instance_id, phone, name, bot_paused, tags,
+                        source, service_interest, athlete_age, traffic_source, utm_source, utm_campaign, fbclid, attribution_metadata
             `,
             [existingClient.rows[0].id, input.name ?? null]
           )
@@ -1013,8 +1014,8 @@ export async function upsertInboundMessage(input: {
                 name = coalesce(excluded.name, public.clients.name),
                 last_message_at = excluded.last_message_at,
                 updated_at = now()
-              returning id, bot_instance_id, phone, bot_paused, tags,
-                        source, service_interest, traffic_source, utm_source, utm_campaign, fbclid, attribution_metadata
+              returning id, bot_instance_id, phone, name, bot_paused, tags,
+                        source, service_interest, athlete_age, traffic_source, utm_source, utm_campaign, fbclid, attribution_metadata
             `,
             [phone, input.name ?? null, botInstanceId]
           );
@@ -1080,7 +1081,7 @@ export async function upsertInboundMessage(input: {
   if (!supabase) return null;
 
   const candidates = phoneLookupCandidates(phone);
-  const clientSelect = "id, bot_instance_id, phone, bot_paused, tags, source, service_interest, athlete_age, traffic_source, utm_source, utm_campaign, fbclid, attribution_metadata";
+  const clientSelect = "id, bot_instance_id, phone, name, bot_paused, tags, source, service_interest, athlete_age, traffic_source, utm_source, utm_campaign, fbclid, attribution_metadata";
   const { data: matchingClients, error: matchingClientsError } = await supabase
     .from("clients")
     .select(clientSelect)
@@ -1749,7 +1750,7 @@ export async function getClientAutomationStateByPhone(phoneInput: string): Promi
 
   const { data, error } = await supabase
     .from("clients")
-    .select("id, bot_instance_id, phone, bot_paused, tags, source, service_interest, traffic_source, utm_source, utm_campaign, fbclid, attribution_metadata")
+    .select("id, bot_instance_id, phone, name, bot_paused, tags, source, service_interest, athlete_age, traffic_source, utm_source, utm_campaign, fbclid, attribution_metadata")
     .in("phone", phoneLookupCandidates(phone))
     .order("bot_instance_id", { ascending: false })
     .order("updated_at", { ascending: false })
@@ -1767,8 +1768,8 @@ export async function getClientAutomationStateById(clientId: string): Promise<Cl
   if (database) {
     const { rows } = await database.query<ClientAutomationState>(
       `
-        select id, bot_instance_id, phone, bot_paused, tags,
-               source, service_interest, traffic_source, utm_source, utm_campaign, fbclid, attribution_metadata
+        select id, bot_instance_id, phone, name, bot_paused, tags,
+               source, service_interest, athlete_age, traffic_source, utm_source, utm_campaign, fbclid, attribution_metadata
         from public.clients
         where id = $1
         limit 1
@@ -1782,7 +1783,7 @@ export async function getClientAutomationStateById(clientId: string): Promise<Cl
 
   const { data, error } = await supabase
     .from("clients")
-    .select("id, bot_instance_id, phone, bot_paused, tags, source, service_interest, traffic_source, utm_source, utm_campaign, fbclid, attribution_metadata")
+    .select("id, bot_instance_id, phone, name, bot_paused, tags, source, service_interest, athlete_age, traffic_source, utm_source, utm_campaign, fbclid, attribution_metadata")
     .eq("id", clientId)
     .limit(1);
 
