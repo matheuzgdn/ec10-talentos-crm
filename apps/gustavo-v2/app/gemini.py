@@ -30,8 +30,8 @@ class GeminiSDR:
                     contents=prompt + correction,
                     config=types.GenerateContentConfig(
                         system_instruction=SYSTEM_INSTRUCTION,
-                        temperature=0.35,
-                        max_output_tokens=900,
+                        temperature=0.2,
+                        max_output_tokens=1400,
                         response_mime_type="application/json",
                         response_schema=Decision,
                     ),
@@ -45,6 +45,13 @@ class GeminiSDR:
             except Exception as exc:
                 last_errors = [f"gemini:{type(exc).__name__}"]
                 if attempt == 2:
-                    raise
+                    break
                 await asyncio.sleep(0.7 * (attempt + 1))
-        raise RuntimeError("Gemini não produziu resposta válida: " + ",".join(last_errors))
+        # A transient/truncated Gemini response must never freeze the WhatsApp
+        # conversation. The deterministic flow guards in the worker will turn
+        # this minimal decision into the correct next commercial step.
+        stage = state.get("stage")
+        if stage not in {"rapport", "discovery", "fit", "guardian", "offer", "booking", "waiting_booking", "human"}:
+            stage = "discovery"
+        fallback = Decision(reply="Vamos seguir por aqui.", stage=stage)
+        return fallback, int((time.monotonic() - started) * 1000), last_errors + ["gemini_fallback_local"]

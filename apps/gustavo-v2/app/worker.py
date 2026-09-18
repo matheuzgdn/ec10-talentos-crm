@@ -5,7 +5,7 @@ from .config import Settings
 from .database import Database
 from .gemini import GeminiSDR
 from .meta import MetaWhatsApp
-from .safety import booking_gate, fallback_reply, merge_state, validate_reply
+from .safety import booking_gate, enforce_ec10_flow, fallback_reply, merge_state, validate_reply
 
 
 class Worker:
@@ -45,8 +45,9 @@ class Worker:
         try:
             before, history, client_id = await self.db.conversation_context(phone)
             decision, latency, generation_errors = await self.ai.decide(before, history, inbound)
-            after = merge_state(before, decision)
+            after = merge_state(before, decision, inbound)
             reply = " ".join(decision.reply.split()).strip()
+            reply, audio_key = enforce_ec10_flow(before, after, reply, decision.audio_key)
             errors = validate_reply(reply, after)
             if errors:
                 reply = fallback_reply(after)
@@ -56,18 +57,24 @@ class Worker:
                 if service not in {"plano_carreira", "plano_internacional", "eurocamp"}:
                     service = "plano_carreira"
                 role = "responsavel" if int(after.get("athlete_age") or 99) < 18 else ("responsavel" if after.get("contact_role") == "responsavel" else "atleta")
-                booking_url = await self.db.create_booking_url(client_id, service, after["contact_name"], role)
+                booking_url = after.get("booking_url")
+                if not booking_url:
+                    booking_url = await self.db.create_booking_url(client_id, service, after["contact_name"], role)
                 after["booking_url"] = booking_url
                 after["stage"] = "waiting_booking"
-                reply = reply.rstrip(" .") + ".\n\nEscolha primeiro o dia e depois o horário disponível:\n" + booking_url
-            audio_key = decision.audio_key
+                reply = (
+                    f"Perfeito, {after['contact_name']}. Agora é só escolher primeiro o dia e depois o horário "
+                    f"que funciona melhor para vocês:\n\n{booking_url}"
+                )
             media_id = self.settings.media_id(audio_key)
             if audio_key in after.get("audio_sent", []):
                 audio_key = None
             if audio_key and media_id:
+                await self.db.enqueue(phone, f"reply:{ids[0]}-{ids[-1]}", "text", {"text": reply})
                 await self.db.enqueue(phone, f"audio:{audio_key}:{ids[0]}", "audio", {"media_id": media_id})
                 after.setdefault("audio_sent", []).append(audio_key)
-            await self.db.enqueue(phone, f"reply:{ids[0]}-{ids[-1]}", "text", {"text": reply})
+            else:
+                await self.db.enqueue(phone, f"reply:{ids[0]}-{ids[-1]}", "text", {"text": reply})
             await self.db.finish_turn(phone, ids, inbound, reply, self.settings.gemini_model, latency, before, after,
                                       {"errors": errors + generation_errors, "booking_gate": gate_reason})
         except Exception as exc:

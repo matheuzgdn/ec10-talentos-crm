@@ -11,6 +11,7 @@ class Facts(BaseModel):
     athlete_age: Optional[int] = Field(default=None, ge=6, le=40)
     current_club: Optional[str] = None
     goal: Optional[str] = None
+    knows_company: Optional[bool] = None
     service_interest: Optional[Literal["plano_carreira", "eurocamp", "plano_internacional", "nao_definido"]] = None
     guardian_name: Optional[str] = None
     guardian_confirmed: Optional[bool] = None
@@ -36,6 +37,8 @@ DEFAULT_STATE = {
     "athlete_age": None,
     "current_club": None,
     "goal": None,
+    "knows_company": None,
+    "company_intro_sent": False,
     "service_interest": "nao_definido",
     "guardian_name": None,
     "guardian_confirmed": False,

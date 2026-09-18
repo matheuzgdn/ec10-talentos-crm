@@ -1,6 +1,6 @@
 from app.database import extract_messages, message_text
 from app.models import Decision, Facts, DEFAULT_STATE
-from app.safety import booking_gate, merge_state, validate_reply
+from app.safety import booking_gate, enforce_ec10_flow, merge_state, validate_reply
 
 
 def test_booking_minor_requires_guardian():
@@ -40,3 +40,27 @@ def test_extracts_cloud_api_message_once():
 def test_blocks_internal_code():
     errors = validate_reply('update_qualification(reply="oi")', DEFAULT_STATE)
     assert "conteudo_tecnico_visivel" in errors
+
+
+def test_records_without_club_from_natural_language():
+    merged = merge_state(DEFAULT_STATE, Decision(reply="Boa."), "Ele tem 14 anos e está sem clube no momento.")
+    assert merged["current_club"] == "sem clube"
+
+
+def test_after_age_explains_path_instead_of_generic_interrogation():
+    before = {**DEFAULT_STATE, "contact_name": "Bruno", "athlete_name": "Marcelo"}
+    after = {**before, "athlete_age": 14, "current_club": "sem clube", "guardian_confirmed": True}
+    reply, audio = enforce_ec10_flow(before, after, "Qual é o principal objetivo dele no futebol?", None)
+    assert "Plano de Carreira" in reply
+    assert "Você já conhecia" in reply
+    assert "principal objetivo" not in reply
+    assert audio is None
+    assert after["company_intro_sent"] is True
+
+
+def test_company_answer_advances_to_correct_eric_audio():
+    before = {**DEFAULT_STATE, "company_intro_sent": True, "contact_name": "Bruno", "athlete_name": "Marcelo", "athlete_age": 14}
+    after = {**before, "knows_company": False}
+    reply, audio = enforce_ec10_flow(before, after, "Certo.", None)
+    assert "Eric Cena" in reply
+    assert audio == "eric_14_18"
