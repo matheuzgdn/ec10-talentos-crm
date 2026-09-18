@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     database_url: str
     gemini_api_key: str
     gemini_model: str = "gemini-2.5-flash"
+    gemini_secondary_model: str = "gemini-3.1-flash-lite"
     meta_graph_version: str = "v25.0"
     meta_phone_number_id: str = ""
     meta_waba_id: str = ""
@@ -20,7 +21,7 @@ class Settings(BaseSettings):
     gustavo_v2_enabled: bool = False
     gustavo_v2_allowed_phones: str = ""
     gustavo_v2_poll_seconds: float = 1.0
-    gustavo_v2_debounce_seconds: int = 3
+    gustavo_v2_debounce_seconds: float = 1.2
     gustavo_v2_http_host: str = "127.0.0.1"
     gustavo_v2_http_port: int = 8781
     eric_audio_8_13_media_id: str = ""

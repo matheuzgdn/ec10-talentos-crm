@@ -43,7 +43,18 @@ try {
       order by created_at desc
       limit 10`,
   )).rows;
-  console.log(JSON.stringify({ contact, turns, outboxCounts, recentOutbox, recentDead }, null, 2));
+  const bookings = (await db.query(
+    `select b.id, b.service, b.contact_name, b.contact_role, b.athlete_age,
+            b.starts_at, b.ends_at, b.status, b.created_at, s.name as seller_name
+       from whatsapp_bot.ec10_bookings b
+       left join whatsapp_bot.sellers s on s.id = b.seller_id
+      where app_private.whatsapp_phone_match_key(b.phone)
+          = app_private.whatsapp_phone_match_key($1)
+      order by b.created_at desc
+      limit 5`,
+    [phone],
+  )).rows;
+  console.log(JSON.stringify({ contact, turns, outboxCounts, recentOutbox, bookings, recentDead }, null, 2));
   await db.query("rollback");
 } catch (error) {
   await db.query("rollback").catch(() => undefined);

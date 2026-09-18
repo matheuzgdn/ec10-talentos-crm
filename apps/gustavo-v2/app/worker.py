@@ -1,19 +1,23 @@
 import asyncio
-import hashlib
-import json
 import re
 from .config import Settings
 from .database import Database
 from .gemini import GeminiSDR
 from .meta import MetaWhatsApp
-from .safety import avoid_repeated_reply, booking_gate, enforce_ec10_flow, fallback_reply, guardian_fast_path, merge_state, validate_reply
+from .safety import (
+    booking_gate,
+    merge_state,
+    sanitize_ai_reply,
+    validate_reply,
+)
+from .models import Decision
 
 
 class Worker:
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.db = Database(settings.database_url)
-        self.ai = GeminiSDR(settings.gemini_api_key, settings.gemini_model)
+        self.db = Database(settings.database_url, settings.gustavo_v2_debounce_seconds)
+        self.ai = GeminiSDR(settings.gemini_api_key, settings.gemini_model, settings.gemini_secondary_model)
         self.meta = MetaWhatsApp(settings.meta_graph_version, settings.meta_phone_number_id, settings.meta_whatsapp_access_token)
         self.stop_event = asyncio.Event()
 
@@ -44,22 +48,40 @@ class Worker:
             await self.db.defer_conversation(ids, "V2 ainda não liberado para este contato")
             return True
         try:
-            before, history, client_id, previous_reply = await self.db.conversation_context(phone)
-            decision = guardian_fast_path(before, inbound)
-            if decision:
-                latency = 0
-                generation_errors = []
-            else:
-                decision, latency, generation_errors = await self.ai.decide(before, history, inbound)
-            after = merge_state(before, decision, inbound)
-            model_reply = " ".join(decision.reply.split()).strip()
-            reply, audio_key = enforce_ec10_flow(before, after, model_reply, decision.audio_key)
-            deterministic_reply = reply != model_reply or audio_key != decision.audio_key
+            before, history, client_id, recent_replies = await self.db.conversation_context(phone)
+            stage = before.get("stage")
+            if stage not in {"rapport", "discovery", "fit", "guardian", "offer", "booking", "waiting_booking", "human"}:
+                stage = "discovery"
+            observed = merge_state(before, Decision(reply="Estado atualizado.", stage=stage), inbound)
+            decision, latency, generation_errors = await self.ai.decide(observed, history, inbound)
+            after = merge_state(observed, decision, inbound)
+            if not before.get("company_intro_sent"):
+                after["company_intro_sent"] = True
+            reply = sanitize_ai_reply(decision.reply, after)
+            audio_key = decision.audio_key
+            age = after.get("athlete_age")
+            expected_audio = None
+            if isinstance(age, int) and 9 <= age <= 13:
+                expected_audio = "eric_8_13"
+            elif isinstance(age, int) and 14 <= age <= 18:
+                expected_audio = "eric_14_18"
+            elif isinstance(age, int) and 20 <= age <= 25:
+                expected_audio = "eric_20_25"
+            if audio_key in set(after.get("audio_sent") or []):
+                audio_key = None
+            elif audio_key and expected_audio:
+                audio_key = expected_audio
+            elif audio_key:
+                audio_key = None
             errors = validate_reply(reply, after)
-            if errors or ("gemini_fallback_local" in generation_errors and not deterministic_reply):
-                reply = fallback_reply(after, inbound)
+            if errors:
+                raise RuntimeError("resposta_da_ia_rejeitada:" + ",".join(errors))
             explicit_booking_request = bool(re.search(
-                r"\b(?:link|agenda|agendar|marcar|reuni[aã]o)\b", inbound, re.I
+                r"\b(?:quero|vamos|pode|podemos|gostaria)\b.*\b(?:agendar|marcar|reuni[aã]o)\b|"
+                r"\b(?:manda|envia|reenvia|cad[eê]|onde|qual)\b.*\blink\b|"
+                r"\blink\b.*\b(?:manda|envia|reenvia|cad[eê]|onde)\b",
+                inbound,
+                re.I,
             ))
             if before.get("booking_url") and not explicit_booking_request:
                 booking_requested = False
@@ -80,25 +102,13 @@ class Worker:
                     booking_url = await self.db.create_booking_url(client_id, service, after["contact_name"], role)
                 after["booking_url"] = booking_url
                 after["stage"] = "waiting_booking"
-                reply = (
-                    f"Perfeito, {after['contact_name']}. Agora é só escolher primeiro o dia e depois o horário "
-                    f"que funciona melhor para vocês:\n\n{booking_url}"
-                )
-            elif booking_requested and gate_reason == "responsavel_nao_confirmado":
-                athlete = after.get("athlete_name") or "o atleta"
-                after["stage"] = "guardian"
-                reply = (
-                    f"Como {athlete} é menor de idade, a conversa precisa acontecer com quem acompanha as decisões da carreira. "
-                    "Você é o responsável por ele?"
-                )
-            elif booking_requested and gate_reason == "audio_eric_nao_enviado":
-                after["stage"] = "offer"
-                audio_key = "eric_14_18" if int(after.get("athlete_age") or 0) >= 14 else "eric_8_13"
-                reply = (
-                    "Antes da agenda, vou te mandar o áudio curto do Eric para você conhecer a proposta do Plano de Carreira. "
-                    "Depois a gente já segue para a reunião."
-                )
-            reply = avoid_repeated_reply(reply, previous_reply, after, inbound)
+                if booking_url not in reply:
+                    reply = f"{reply}\n\n{booking_url}"
+            elif booking_requested and gate_reason:
+                after["stage"] = "guardian" if gate_reason == "responsavel_nao_confirmado" else after.get("stage", "offer")
+            if before.get("booking_url") and not explicit_booking_request:
+                reply = reply.replace(str(before["booking_url"]), "o link que já enviei")
+                reply = re.sub(r"https://ec10talentos\.com/agendar\S+", "o link que já enviei", reply)
             media_id = self.settings.media_id(audio_key)
             if audio_key in after.get("audio_sent", []):
                 audio_key = None
@@ -148,3 +158,4 @@ class Worker:
 
     async def stop(self):
         self.stop_event.set()
+        await self.meta.close()

@@ -43,8 +43,9 @@ def message_text(message: dict) -> str:
 
 
 class Database:
-    def __init__(self, url: str):
+    def __init__(self, url: str, debounce_seconds: float = 1.2):
         self.url = url
+        self.debounce_seconds = debounce_seconds
 
     async def connect(self):
         return await psycopg.AsyncConnection.connect(self.url, row_factory=dict_row)
@@ -93,9 +94,10 @@ class Database:
                         values(%s,%s,now()) on conflict(phone) do update set client_id=excluded.client_id,last_inbound_at=now(),updated_at=now()
                     """, (phone, client["id"]))
                     inserted = await (await conn.execute("""
-                        insert into whatsapp_bot.gustavo_v2_inbox(meta_message_id,phone,message_type,body,raw_message)
-                        values(%s,%s,%s,%s,%s::jsonb) on conflict(meta_message_id) do nothing returning id
-                    """, (message_id, phone, str(item.get("type", "unknown")), body, json.dumps(item)))).fetchone()
+                        insert into whatsapp_bot.gustavo_v2_inbox(meta_message_id,phone,message_type,body,raw_message,due_at)
+                        values(%s,%s,%s,%s,%s::jsonb,now()+(%s*interval '1 second'))
+                        on conflict(meta_message_id) do nothing returning id
+                    """, (message_id, phone, str(item.get("type", "unknown")), body, json.dumps(item), self.debounce_seconds))).fetchone()
                     if inserted:
                         await conn.execute("""
                             insert into whatsapp_bot.messages(client_id,direction,body,media_type,whatsapp_message_id,bot_instance_id,whatsapp_chat_id)
@@ -126,7 +128,7 @@ class Database:
                 await conn.execute("update whatsapp_bot.gustavo_v2_inbox set status='processing',attempts=attempts+1 where id=any(%s)", (ids,))
                 return {"phone": phone_row["phone"], "rows": rows}
 
-    async def conversation_context(self, phone: str) -> tuple[dict, list[dict], Optional[str], Optional[str]]:
+    async def conversation_context(self, phone: str) -> tuple[dict, list[dict], Optional[str], list[str]]:
         async with await self.connect() as conn:
             contact = await (await conn.execute("select client_id,state,status from whatsapp_bot.gustavo_v2_contacts where phone=%s", (phone,))).fetchone()
             state = {**deepcopy(DEFAULT_STATE), **(contact["state"] or {})}
@@ -149,12 +151,12 @@ class Database:
                     where m.client_id=%s and body is not null order by created_at desc limit 20
                 """, (contact["client_id"],))).fetchall()
                 history = [{"role": row["direction"], "text": row["body"]} for row in reversed(history_rows)]
-            last_turn = turn_rows[0] if turn_rows else None
+            recent_replies = [str(row["response_text"]) for row in turn_rows if row.get("response_text")]
             return (
                 state,
                 history,
                 str(contact["client_id"]) if contact["client_id"] else None,
-                str(last_turn["response_text"]) if last_turn and last_turn.get("response_text") else None,
+                recent_replies,
             )
 
     async def finish_turn(self, phone: str, inbox_ids: list[int], inbound: str, reply: str, model: str,

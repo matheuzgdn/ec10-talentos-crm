@@ -16,11 +16,10 @@ class MetaWhatsApp:
     ):
         self.base = f"https://graph.facebook.com/{graph_version}/{phone_number_id}/messages"
         self.headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        self.transport = transport
+        self.client = httpx.AsyncClient(timeout=10, transport=transport)
 
     async def _request(self, payload: dict) -> dict:
-        async with httpx.AsyncClient(timeout=20, transport=self.transport) as client:
-            response = await client.post(self.base, headers=self.headers, json=payload)
+        response = await self.client.post(self.base, headers=self.headers, json=payload)
         try:
             data = response.json()
         except ValueError:
@@ -63,3 +62,6 @@ class MetaWhatsApp:
 
     async def mark_read(self, message_id: str) -> None:
         await self._request({"messaging_product": "whatsapp", "status": "read", "message_id": message_id})
+
+    async def close(self) -> None:
+        await self.client.aclose()

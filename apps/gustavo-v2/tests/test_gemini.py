@@ -1,6 +1,6 @@
 import pytest
 
-from app.gemini import GeminiSDR
+from app.gemini import AIUnavailableError, GeminiSDR
 from app.models import DEFAULT_STATE
 
 
@@ -15,16 +15,13 @@ class BrokenClient:
 
 
 @pytest.mark.asyncio
-async def test_provider_failure_returns_local_fallback(monkeypatch):
-    async def no_sleep(_):
-        return None
-
-    monkeypatch.setattr("app.gemini.asyncio.sleep", no_sleep)
+async def test_all_provider_routes_fail_without_sending_canned_reply():
     agent = object.__new__(GeminiSDR)
     agent.client = BrokenClient()
-    agent.model = "broken-model"
+    agent.models = ["broken-primary", "broken-secondary"]
 
-    decision, _, errors = await agent.decide(DEFAULT_STATE, [], "Oi")
+    with pytest.raises(AIUnavailableError) as captured:
+        await agent.decide(DEFAULT_STATE, [], "Oi")
 
-    assert decision.reply == "Vamos seguir por aqui."
-    assert "gemini_fallback_local" in errors
+    assert "broken-primary" in str(captured.value)
+    assert "broken-secondary" in str(captured.value)

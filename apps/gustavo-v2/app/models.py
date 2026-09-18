@@ -16,6 +16,7 @@ class Facts(BaseModel):
     guardian_name: Optional[str] = None
     guardian_confirmed: Optional[bool] = None
     meeting_interest: Optional[bool] = None
+    lead_source: Optional[str] = None
 
 
 class Decision(BaseModel):
@@ -43,6 +44,7 @@ DEFAULT_STATE = {
     "guardian_name": None,
     "guardian_confirmed": False,
     "meeting_interest": False,
+    "lead_source": None,
     "stage": "rapport",
     "audio_sent": [],
     "booking_url": None,

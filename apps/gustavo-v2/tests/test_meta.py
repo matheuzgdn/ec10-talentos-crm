@@ -12,6 +12,7 @@ async def test_send_text_returns_message_id():
 
     client = MetaWhatsApp("v25.0", "phone-id", "token-value", httpx.MockTransport(handler))
     assert await client.send_text("5531999999999", "Oi") == "wamid.123"
+    await client.close()
 
 
 @pytest.mark.asyncio
@@ -24,6 +25,7 @@ async def test_meta_error_keeps_actionable_code_without_token():
         await client.send_text("5531999999999", "Oi")
     assert "131030" in str(captured.value)
     assert "secret-token" not in str(captured.value)
+    await client.close()
 
 
 @pytest.mark.asyncio
@@ -33,3 +35,4 @@ async def test_mark_read_accepts_success_without_message_id():
 
     client = MetaWhatsApp("v25.0", "phone-id", "token-value", httpx.MockTransport(handler))
     await client.mark_read("wamid.123")
+    await client.close()
