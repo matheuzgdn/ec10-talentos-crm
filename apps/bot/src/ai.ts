@@ -1214,7 +1214,7 @@ function mojibakeScore(value: string) {
   return (value.match(/[ÃÂ�]/g) ?? []).length;
 }
 
-function parseJson(text: string): AiJson | null {
+export function parseJson(text: string): AiJson | null {
   const cleaned = text
     .trim()
     .replace(/^```(?:json)?/i, "")
@@ -1225,14 +1225,46 @@ function parseJson(text: string): AiJson | null {
   try {
     return JSON.parse(cleaned) as AiJson;
   } catch {
-    const match = cleaned.match(/\{[\s\S]*\}/);
-    if (!match) return null;
+    const objectText = firstBalancedJsonObject(cleaned);
+    if (!objectText) return null;
     try {
-      return JSON.parse(match[0]) as AiJson;
+      return JSON.parse(objectText) as AiJson;
     } catch {
       return null;
     }
   }
+}
+
+function firstBalancedJsonObject(value: string) {
+  const start = value.indexOf("{");
+  if (start < 0) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < value.length; index += 1) {
+    const character = value[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      continue;
+    }
+    if (character === "{") depth += 1;
+    if (character === "}") {
+      depth -= 1;
+      if (depth === 0) return value.slice(start, index + 1);
+      if (depth < 0) return null;
+    }
+  }
+  return null;
 }
 
 function numberFromJson(value: unknown) {

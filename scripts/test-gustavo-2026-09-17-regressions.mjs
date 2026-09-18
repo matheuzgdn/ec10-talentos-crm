@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { isAiLeadQualifiedForMeeting, selectEricAudioPathForAiReply } from "../apps/bot/dist/ai.js";
+import { isAiLeadQualifiedForMeeting, parseJson, selectEricAudioPathForAiReply } from "../apps/bot/dist/ai.js";
 import { selectBookingContactName } from "../apps/bot/dist/booking-contact.js";
 import { learningPrompt, singleQuestionReply } from "../apps/bot/dist/ec10-learning.mjs";
 
@@ -42,6 +42,11 @@ const firstCareerAudio=selectEricAudioPathForAiReply(careerAudioReply,[]);
 assert.match(firstCareerAudio,/01_8-13_apresentacao/);
 assert.match(selectEricAudioPathForAiReply(careerAudioReply,[firstCareerAudio]),/02_8-13_plano-de-carreira/);
 assert.equal(selectEricAudioPathForAiReply(careerAudioReply,[firstCareerAudio,"media/audio/ec10/eric-2026-09-14/02_8-13_plano-de-carreira.ogg"]),null);
+assert.deepEqual(
+  parseJson('{"reply":"Resposta com {chaves} no texto","ok":true}\nrecommended_next_step"}'),
+  {reply:"Resposta com {chaves} no texto",ok:true},
+  "leitor deve preservar o primeiro JSON válido e ignorar lixo acrescentado pelo modelo",
+);
 
 assert.equal(selectBookingContactName({
   metadata:{leadName:"Marcelo Ramos", athleteName:"Marcelo Ramos"},
@@ -89,4 +94,4 @@ assert.match(aiSource,/Sou o atendimento virtual Gustavo da EC10/);
 assert.match(aiSource,/Não consigo validar o conteúdo dele por aqui/);
 assert.doesNotMatch(aiSource,/Você é Anderson, consultor virtual/);
 
-console.log(JSON.stringify({passed:21,total:21,noWhatsAppSent:true,source:"conversas-2026-09-17"},null,2));
+console.log(JSON.stringify({passed:22,total:22,noWhatsAppSent:true,source:"conversas-2026-09-17"},null,2));

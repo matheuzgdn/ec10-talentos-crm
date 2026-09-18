@@ -68,8 +68,10 @@ write_status "validating" "$target_commit" "install_build_test"
 (
   cd "$release_dir"
   npm ci --no-audit --no-fund
-  npm run typecheck
-  npm run build
+  npm --workspace @crm/shared run typecheck
+  npm --workspace @crm/bot run typecheck
+  npm --workspace @crm/shared run build
+  npm --workspace @crm/bot run build
   node scripts/scan-repository-secrets.mjs
   node scripts/test-gustavo-fault-injection.mjs
   node scripts/test-gustavo-2026-09-17-regressions.mjs
