@@ -20,12 +20,16 @@ class Facts(BaseModel):
 
 
 class Decision(BaseModel):
-    reply: str = Field(min_length=2, max_length=900)
+    reply: str = Field(min_length=2, max_length=900, description=(
+        "Mensagem curta e natural para o WhatsApp. Se audio_key está preenchido, avise do áudio sem nenhuma pergunta. "
+        "Se booking_ready=true, avise que envia a agenda sem nenhuma pergunta. Não peça permissão para áudio nem horário."
+    ))
     facts: Facts = Field(default_factory=Facts)
     stage: Literal[
         "rapport", "discovery", "fit", "guardian", "offer", "booking", "waiting_booking", "human"
     ] = "discovery"
     audio_key: Optional[Literal["eric_8_13", "eric_14_18", "eric_20_25"]] = None
+    followup_delay_seconds: Optional[int] = Field(default=None, ge=15, le=300)
     booking_ready: bool = False
     handoff: bool = False
     handoff_reason: Optional[str] = None

@@ -3,12 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+import time
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Optional
 import psycopg
 from psycopg.rows import dict_row
 from .models import DEFAULT_STATE
+from psycopg_pool import AsyncConnectionPool
 
 
 def digits(value: str) -> str:
@@ -46,9 +48,29 @@ class Database:
     def __init__(self, url: str, debounce_seconds: float = 1.2):
         self.url = url
         self.debounce_seconds = debounce_seconds
+        self._checked_at: dict[int, float] = {}
+        self.pool = AsyncConnectionPool(
+            conninfo=url, kwargs={"row_factory": dict_row, "prepare_threshold": None},
+            min_size=2, max_size=5, open=False, timeout=10,
+            check=self._check_connection,
+        )
+
+    async def _check_connection(self, conn):
+        # Validate idle connections, not every statement on a hot connection.
+        # A checkout SELECT per operation adds a full network round trip.
+        now = time.monotonic()
+        if now - self._checked_at.get(id(conn), 0) >= 60:
+            await AsyncConnectionPool.check_connection(conn)
+            self._checked_at[id(conn)] = now
+
+    async def open(self):
+        await self.pool.open(wait=True)
+
+    async def close(self):
+        await self.pool.close()
 
     async def connect(self):
-        return await psycopg.AsyncConnection.connect(self.url, row_factory=dict_row)
+        return self.pool.connection()
 
     async def claim_event(self) -> Optional[dict]:
         async with await self.connect() as conn:
@@ -100,6 +122,11 @@ class Database:
                     """, (message_id, phone, str(item.get("type", "unknown")), body, json.dumps(item), self.debounce_seconds))).fetchone()
                     if inserted:
                         await conn.execute("""
+                            update whatsapp_bot.gustavo_v2_inbox
+                               set status='done',processed_at=now(),error_message='followup_cancelled_by_lead'
+                             where phone=%s and message_type='internal_followup' and status='pending'
+                        """, (phone,))
+                        await conn.execute("""
                             insert into whatsapp_bot.messages(client_id,direction,body,media_type,whatsapp_message_id,bot_instance_id,whatsapp_chat_id)
                             values(%s,'inbound',%s,%s,%s,'main',%s) on conflict do nothing
                         """, (client["id"], body, str(item.get("type", "text")), message_id, f"{phone}@c.us"))
@@ -108,11 +135,24 @@ class Database:
                     value = str(status.get("status", ""))
                     column = {"sent": "sent_at", "delivered": "delivered_at", "read": "read_at"}.get(value)
                     if meta_id and column:
-                        await conn.execute(f"update whatsapp_bot.gustavo_v2_outbox set status=%s,{column}=now() where meta_message_id=%s", (value, meta_id))
+                        await conn.execute(f"""
+                            update whatsapp_bot.gustavo_v2_outbox
+                               set status=case
+                                     when status='read' then status
+                                     when status='delivered' and %s='sent' then status
+                                     else %s end,
+                                   {column}=coalesce({column},now())
+                             where meta_message_id=%s
+                        """, (value, value, meta_id))
 
     async def claim_conversation(self) -> Optional[dict]:
         async with await self.connect() as conn:
             async with conn.transaction():
+                await conn.execute("""
+                    update whatsapp_bot.gustavo_v2_inbox
+                       set status='pending',due_at=now(),error_message='recovered_interrupted_generation'
+                     where status='processing' and due_at<now()-interval '2 minutes'
+                """)
                 phone_row = await (await conn.execute("""
                     select phone,id first_id from whatsapp_bot.gustavo_v2_inbox
                     where status='pending' and due_at<=now()
@@ -121,11 +161,11 @@ class Database:
                 if not phone_row:
                     return None
                 rows = await (await conn.execute("""
-                    select id,meta_message_id,body,raw_message from whatsapp_bot.gustavo_v2_inbox
+                    select id,meta_message_id,body,raw_message,message_type from whatsapp_bot.gustavo_v2_inbox
                     where phone=%s and status='pending' and due_at<=now() order by id for update skip locked
                 """, (phone_row["phone"],))).fetchall()
                 ids = [row["id"] for row in rows]
-                await conn.execute("update whatsapp_bot.gustavo_v2_inbox set status='processing',attempts=attempts+1 where id=any(%s)", (ids,))
+                await conn.execute("update whatsapp_bot.gustavo_v2_inbox set status='processing',due_at=now(),attempts=attempts+1 where id=any(%s)", (ids,))
                 return {"phone": phone_row["phone"], "rows": rows}
 
     async def conversation_context(self, phone: str) -> tuple[dict, list[dict], Optional[str], list[str]]:
@@ -160,18 +200,33 @@ class Database:
             )
 
     async def finish_turn(self, phone: str, inbox_ids: list[int], inbound: str, reply: str, model: str,
-                          latency_ms: int, before: dict, after: dict, validation: dict, error: Optional[str] = None):
+                          latency_ms: int, before: dict, after: dict, validation: dict, error: Optional[str] = None,
+                          message_specs: Optional[list[dict]] = None):
         async with await self.connect() as conn:
             async with conn.transaction():
-                status = "dead" if error else "done"
-                await conn.execute("update whatsapp_bot.gustavo_v2_inbox set status=%s,processed_at=now(),error_message=%s where id=any(%s)", (status, error, inbox_ids))
-                await conn.execute("""
-                    update whatsapp_bot.gustavo_v2_contacts set state=%s::jsonb,status=%s,last_error=%s,updated_at=now() where phone=%s
-                """, (json.dumps(after), "human" if after.get("stage") == "human" else "active", error, phone))
-                await conn.execute("""
-                    insert into whatsapp_bot.gustavo_v2_turns(phone,inbound_ids,inbound_text,response_text,model,latency_ms,state_before,state_after,validation,status,error_message)
-                    values(%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s)
-                """, (phone, inbox_ids, inbound, reply, model, latency_ms, json.dumps(before), json.dumps(after), json.dumps(validation), "error" if error else "ok", error))
+                # State, reply and media become visible together, in one network
+                # pipeline. The sender can never see an uncommitted AI turn.
+                async with conn.pipeline():
+                    if message_specs is not None:
+                        await conn.execute("""
+                            update whatsapp_bot.gustavo_v2_outbox
+                               set status='dead',error_message='superseded_by_new_inbound'
+                             where phone=%s and status in ('queued','failed')
+                        """, (phone,))
+                        for spec in message_specs:
+                            await conn.execute("""
+                                insert into whatsapp_bot.gustavo_v2_outbox(idempotency_key,phone,message_type,payload)
+                                values(%s,%s,%s,%s::jsonb) on conflict(idempotency_key) do nothing
+                            """, (spec["key"], phone, spec["message_type"], json.dumps(spec["payload"])))
+                    status = "dead" if error else "done"
+                    await conn.execute("update whatsapp_bot.gustavo_v2_inbox set status=%s,processed_at=now(),error_message=%s where id=any(%s)", (status, error, inbox_ids))
+                    await conn.execute("""
+                        update whatsapp_bot.gustavo_v2_contacts set state=%s::jsonb,status=%s,last_error=%s,updated_at=now() where phone=%s
+                    """, (json.dumps(after), "human" if after.get("stage") == "human" else "active", error, phone))
+                    await conn.execute("""
+                        insert into whatsapp_bot.gustavo_v2_turns(phone,inbound_ids,inbound_text,response_text,model,latency_ms,state_before,state_after,validation,status,error_message)
+                        values(%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s)
+                    """, (phone, inbox_ids, inbound, reply, model, latency_ms, json.dumps(before), json.dumps(after), json.dumps(validation), "error" if error else "ok", error))
 
     async def retry_conversation(self, inbox_ids: list[int], error: str):
         async with await self.connect() as conn:
@@ -207,6 +262,48 @@ class Database:
                 insert into whatsapp_bot.gustavo_v2_outbox(idempotency_key,phone,message_type,payload)
                 values(%s,%s,%s,%s::jsonb) on conflict(idempotency_key) do nothing
             """, (key, phone, message_type, json.dumps(payload)))
+
+    async def schedule_audio_followup(self, item: dict, delay: int):
+        """An AI-requested timer, not a fabricated customer message or canned reply."""
+        async with await self.connect() as conn:
+            await conn.execute("""
+                insert into whatsapp_bot.gustavo_v2_inbox
+                  (meta_message_id,phone,message_type,body,raw_message,due_at)
+                select %s,%s,'internal_followup','',%s::jsonb,
+                       now()+(%s*interval '1 second')
+                 where not exists (
+                    select 1 from whatsapp_bot.gustavo_v2_inbox
+                     where phone=%s and message_type<>'internal_followup' and created_at>%s
+                 )
+                on conflict(meta_message_id) do nothing
+            """, (f"internal-audio-followup:{item['id']}", item["phone"],
+                    json.dumps({"internal_event": "audio_followup", "source_outbox_id": str(item["id"])}),
+                    delay, item["phone"], item["created_at"]))
+
+    async def has_newer_inbound(self, phone: str, last_id: int) -> bool:
+        async with await self.connect() as conn:
+            row = await (await conn.execute("""
+                select exists(select 1 from whatsapp_bot.gustavo_v2_inbox
+                               where phone=%s and id>%s and message_type<>'internal_followup') newer
+            """, (phone, last_id))).fetchone()
+            return bool(row["newer"])
+
+    async def followup_audio_delivered(self, source_id: str) -> bool:
+        async with await self.connect() as conn:
+            row = await (await conn.execute(
+                "select delivered_at,read_at from whatsapp_bot.gustavo_v2_outbox where id=%s",
+                (source_id,),
+            )).fetchone()
+            return bool(row and (row["delivered_at"] or row["read_at"]))
+
+    async def defer_audio_followup(self, ids: list[int]):
+        async with await self.connect() as conn:
+            await conn.execute("""
+                update whatsapp_bot.gustavo_v2_inbox
+                   set status=case when created_at<now()-interval '10 minutes' then 'done' else 'pending' end,
+                       due_at=now()+interval '15 seconds',error_message='waiting_audio_delivery'
+                 where id=any(%s)
+            """, (ids,))
 
     async def supersede_pending_outbox(self, phone: str):
         """Discard obsolete replies when the lead has already sent a newer message."""

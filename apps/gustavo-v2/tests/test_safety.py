@@ -10,13 +10,13 @@ def test_booking_minor_requires_guardian():
 
 def test_booking_minor_with_guardian_and_audio():
     state = {**DEFAULT_STATE, "contact_name": "Bruno", "athlete_age": 15, "meeting_interest": True,
-             "guardian_confirmed": True, "audio_sent": ["eric_14_18"]}
+             "contact_role": "responsavel", "guardian_confirmed": True, "audio_sent": ["eric_14_18"]}
     assert booking_gate(state, True) == (True, None)
 
 
 def test_plan_career_booking_waits_for_eric_audio():
     state = {**DEFAULT_STATE, "contact_name": "Bruno", "athlete_age": 15,
-             "meeting_interest": True, "guardian_confirmed": True}
+             "contact_role": "responsavel", "meeting_interest": True, "guardian_confirmed": True}
     assert booking_gate(state, True) == (False, "audio_eric_nao_enviado")
 
 
@@ -79,10 +79,38 @@ def test_bare_age_is_saved_when_missing():
     assert merge_state(DEFAULT_STATE, Decision(reply="Vamos seguir."), "15")["athlete_age"] == 15
 
 
-def test_short_yes_after_audio_becomes_meeting_interest():
+def test_short_yes_is_interpreted_by_ai_not_a_word_trigger():
     previous = {**DEFAULT_STATE, "contact_name": "Bruno", "athlete_name": "Marcelo", "athlete_age": 14,
                 "guardian_confirmed": True, "audio_sent": ["eric_14_18"]}
-    assert merge_state(previous, Decision(reply="Vamos seguir."), "ss")["meeting_interest"] is True
+    assert merge_state(previous, Decision(reply="Vamos seguir."), "ss")["meeting_interest"] is False
+    assert merge_state(previous, Decision(reply="Vamos seguir.", facts=Facts(meeting_interest=True)), "ss")["meeting_interest"] is True
+
+
+def test_short_confirmation_is_not_saved_as_a_person_name():
+    for text in ("ss", "pode mandar", "pode sim", "sim"):
+        assert merge_state(DEFAULT_STATE, Decision(reply="Vamos seguir."), text)["contact_name"] is None
+
+
+def test_audio_memory_does_not_mutate_the_previous_turn():
+    before = {**DEFAULT_STATE, "audio_sent": []}
+    after = merge_state(before, Decision(reply="Vamos seguir."))
+    after["audio_sent"].append("eric_14_18")
+    assert before["audio_sent"] == []
+
+
+def test_minor_cannot_inherit_guardian_confirmation_from_old_state():
+    before = {**DEFAULT_STATE, "contact_role": "responsavel", "guardian_confirmed": True,
+              "athlete_age": 15, "contact_name": "João", "audio_sent": ["eric_14_18"],
+              "meeting_interest": True}
+    after = merge_state(before, Decision(reply="Vamos conversar com seu responsável."), "sou o atleta")
+    assert after["guardian_confirmed"] is False
+    assert booking_gate(after, True) == (False, "responsavel_nao_confirmado")
+
+
+def test_ai_can_record_withdrawn_meeting_interest():
+    before = {**DEFAULT_STATE, "meeting_interest": True}
+    after = merge_state(before, Decision(reply="Sem problema.", facts=Facts(meeting_interest=False)), "não quero agendar")
+    assert after["meeting_interest"] is False
 
 
 def test_self_identified_minor_is_saved_as_athlete():

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from typing import Optional
+from typing import Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,8 +11,10 @@ class Settings(BaseSettings):
 
     database_url: str
     gemini_api_key: str
-    gemini_model: str = "gemini-2.5-flash"
-    gemini_secondary_model: str = "gemini-3.1-flash-lite"
+    gemini_model: str = "gemini-3.5-flash"
+    gemini_secondary_model: str = "gemini-3.5-flash-lite"
+    gemini_thinking_level: Literal["minimal", "low", "medium", "high"] = "low"
+    gemini_timeout_seconds: float = 5
     meta_graph_version: str = "v25.0"
     meta_phone_number_id: str = ""
     meta_waba_id: str = ""

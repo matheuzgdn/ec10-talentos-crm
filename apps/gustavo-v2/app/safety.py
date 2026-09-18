@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from copy import deepcopy
 from typing import Optional
 from .models import Decision
 
@@ -57,15 +58,6 @@ def _extract_deterministic_facts(previous: dict, inbound: str) -> dict:
     ))
     if contact_name:
         facts["contact_name"] = contact_name
-    elif not previous.get("contact_name") and re.fullmatch(r"[A-Za-zÀ-ÖØ-öø-ÿ' -]{2,45}", compact):
-        tokens = lower.split()
-        not_a_name = {
-            "sim", "nao", "oi", "ola", "bom dia", "boa tarde", "boa noite", "pode ser",
-            "quero", "conheco", "nao conheco", "sou atleta", "sou responsavel",
-        }
-        cleaned = _clean_person_name(compact)
-        if cleaned and 1 <= len(tokens) <= 6 and lower not in not_a_name:
-            facts["contact_name"] = cleaned
 
     athlete_name = _natural_name(re.search(
         r"(?:meu|minha)\s+(?:filho|filha)(?:\s+(?:se chama|é|e))?\s+([A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ' -]{1,45}?)(?=\s+(?:(?:que\s+)?tem|est[aá]|joga|e\s+tem)\b|[,.;!?]|$)",
@@ -127,15 +119,16 @@ def _extract_deterministic_facts(previous: dict, inbound: str) -> dict:
         r"\b(?:quero|vamos|pode|podemos|tenho interesse|gostaria|bora)\b.*\b(?:agendar|marcar|reuniao|conversar)\b",
         lower,
     )
-    short_yes = re.fullmatch(r"(?:sim|s|ss|quero|pode ser|vamos|bora|tenho interesse)[!. ]*", lower)
-    if audio_sent and (positive_meeting or short_yes):
+    # A short yes may acknowledge audio, company knowledge or a meeting.
+    # Only the AI with conversation context can interpret that intent.
+    if audio_sent and positive_meeting:
         facts["meeting_interest"] = True
 
     return facts
 
 
 def merge_state(previous: dict, decision: Decision, inbound: str = "") -> dict:
-    state = dict(previous)
+    state = deepcopy(previous)
     for key in ("contact_name", "guardian_name", "athlete_name"):
         if state.get(key):
             cleaned = _clean_person_name(str(state[key]))
@@ -150,8 +143,6 @@ def merge_state(previous: dict, decision: Decision, inbound: str = "") -> dict:
                 if key == "athlete_age" or not incoming_name or (current_name and len(incoming_name.split()) <= len(current_name.split())):
                     continue
                 value = incoming_name
-            if key in {"guardian_confirmed", "meeting_interest"} and previous.get(key) is True and value is False:
-                continue
             state[key] = value
     for key, value in _extract_deterministic_facts(previous, inbound).items():
         if key in {"contact_name", "guardian_name", "athlete_name"} and state.get(key):
@@ -165,6 +156,8 @@ def merge_state(previous: dict, decision: Decision, inbound: str = "") -> dict:
         state["athlete_name"] = state["contact_name"]
     if isinstance(state.get("athlete_age"), int) and 9 <= state["athlete_age"] <= 18:
         state["service_interest"] = "plano_carreira"
+    if state.get("contact_role") == "atleta" and isinstance(state.get("athlete_age"), int) and state["athlete_age"] < 18:
+        state["guardian_confirmed"] = False
     state["stage"] = "waiting_booking" if previous.get("stage") == "waiting_booking" else decision.stage
     lower = " ".join(inbound.lower().split())
     if re.search(r"\b(?:sem clube|n[aã]o (?:est[aá]|joga) (?:em|no) clube|est[aá] sem clube)\b", lower):
@@ -184,7 +177,7 @@ def booking_gate(state: dict, requested: bool) -> tuple[bool, Optional[str]]:
         return False, "idade_ausente"
     if not state.get("contact_name"):
         return False, "nome_contato_ausente"
-    if age < 18 and not state.get("guardian_confirmed"):
+    if age < 18 and (not state.get("guardian_confirmed") or state.get("contact_role") != "responsavel"):
         return False, "responsavel_nao_confirmado"
     if 9 <= age <= 18 and not state.get("audio_sent"):
         return False, "audio_eric_nao_enviado"
