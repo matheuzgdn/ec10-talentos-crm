@@ -48,7 +48,16 @@ def main() -> None:
             """,
             (phone,),
         ).fetchall()
-    print(json.dumps({"contact": contact, "turns": turns, "outbox": queues}, ensure_ascii=False, default=str))
+        recent_outbox = conn.execute(
+            """
+            select message_type,status,attempts,error_message,created_at,sent_at,delivered_at
+              from whatsapp_bot.gustavo_v2_outbox
+             where phone=%s order by created_at desc limit 5
+            """,
+            (phone,),
+        ).fetchall()
+    print(json.dumps({"contact": contact, "turns": turns, "outbox": queues, "recent_outbox": recent_outbox},
+                     ensure_ascii=False, default=str))
 
 
 if __name__ == "__main__":

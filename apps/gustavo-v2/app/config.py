@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     meta_whatsapp_verify_token: str = ""
     gustavo_v2_enabled: bool = False
     gustavo_v2_allowed_phones: str = ""
+    gustavo_v2_recipient_aliases: str = ""
     gustavo_v2_poll_seconds: float = 1.0
     gustavo_v2_debounce_seconds: float = 1.2
     gustavo_v2_http_host: str = "127.0.0.1"
@@ -38,6 +39,13 @@ class Settings(BaseSettings):
             "eric_14_18": self.eric_audio_14_18_media_id,
             "eric_20_25": self.eric_audio_20_25_media_id,
         }.get(audio_key or "", "")
+
+    def recipient_phone(self, phone: str) -> str:
+        for entry in self.gustavo_v2_recipient_aliases.split(","):
+            source, separator, target = entry.partition("=")
+            if separator and source.strip() == phone and target.strip().isdigit():
+                return target.strip()
+        return phone
 
 
 @lru_cache

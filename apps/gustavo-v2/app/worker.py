@@ -131,10 +131,11 @@ class Worker:
             return False
         try:
             payload = item["payload"]
+            recipient = self.settings.recipient_phone(item["phone"])
             if item["message_type"] == "audio":
-                meta_id = await self.meta.send_audio(item["phone"], payload["media_id"])
+                meta_id = await self.meta.send_audio(recipient, payload["media_id"])
             else:
-                meta_id = await self.meta.send_text(item["phone"], payload["text"])
+                meta_id = await self.meta.send_text(recipient, payload["text"])
             await self.db.finish_outbox(item["id"], meta_id=meta_id)
         except Exception as exc:
             await self.db.finish_outbox(item["id"], error=f"{type(exc).__name__}: {exc}")
