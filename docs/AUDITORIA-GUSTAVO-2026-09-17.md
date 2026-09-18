@@ -2,17 +2,17 @@
 
 ## Escopo
 
-Leitura de todas as conversas registradas no WhatsApp comercial entre 00:00 e 21:18 (America/Sao_Paulo), cruzada com estado do funil, eventos do bot, código em produção e logs do Oracle.
+Leitura de todas as conversas registradas no WhatsApp comercial entre 00:00 e 22:10 (America/Sao_Paulo), cruzada com estado do funil, eventos do bot, código em produção e logs do Oracle.
 
 ## Volume e tempo de resposta
 
-- 15 conversas.
-- 183 mensagens: 93 recebidas e 90 enviadas automaticamente.
-- 80 pares em que uma resposta automática veio depois de uma mensagem do cliente.
-- Mediana: 9,4 segundos.
-- 90% das respostas: até 15,3 segundos.
-- 9 respostas demoraram mais de 15 segundos.
-- 3 respostas demoraram mais de 1 minuto.
+- 18 conversas.
+- 203 mensagens: 103 recebidas e 100 enviadas automaticamente.
+- 96 pares em que uma resposta automática veio depois de uma mensagem do cliente.
+- Mediana: 9,0 segundos.
+- 90% das respostas: até 16,2 segundos.
+- 12 respostas demoraram mais de 15 segundos.
+- 4 respostas demoraram mais de 1 minuto.
 - Maior espera: 8.960 segundos, causada por indisponibilidade/reinício, não por “tempo de pensar” da IA.
 
 ## Falhas observadas por conversa
@@ -34,6 +34,9 @@ Leitura de todas as conversas registradas no WhatsApp comercial entre 00:00 e 21
 | Bernardo Henrique | Menor sem responsável recebeu agenda; perguntas de localização, cancelamento e reagendamento não foram tratadas; o mesmo link foi repetido várias vezes; o bot afirmou ser pessoa. | Crítica |
 | Veri | Recebeu somente uma frase genérica, sem pergunta ou próximo passo. | Alta |
 | Gustavo Henrique | Quatro mensagens diferentes receberam exatamente a mesma frase genérica; o estado ficou parado. | Crítica |
+| Christian | Apresentou-se, informou nome, idade de 15 anos, posição e pediu explicação. As três entradas receberam a mesma frase genérica e nenhum dado avançou no estado. | Crítica |
+| Denisvan/Albertina | Seis entradas diferentes, incluindo objetivo profissional, dúvida e pedido de esclarecimento, receberam exatamente a mesma frase genérica. | Crítica |
+| Guilherme/Rosilene | Lead de campanha se apresentou, mas recebeu somente a frase genérica e permaneceu aguardando idade. | Alta |
 
 ## Causas comprovadas
 
@@ -77,6 +80,15 @@ Leitura de todas as conversas registradas no WhatsApp comercial entre 00:00 e 21
 - 16 regressões construídas com os erros reais do dia: aprovadas.
 - 415 casos adversariais do fluxo: aprovados, sem falhas.
 - Autoteste do guardião: aprovado.
+
+## Situação de produção após a correção
+
+- A versão corrigida ficou pronta no Oracle às 22:20 (America/Sao_Paulo).
+- Serviço do WhatsApp: ativo e autenticado, com saúde `ready`.
+- Fila de envio: sem mensagem falhada e sem mensagem aguardando envio.
+- Instâncias incorretas: nenhuma; todos os contatos do dia pertencem à instância principal.
+- Não houve nova mensagem real após a troca de versão até o fechamento deste relatório; por isso, o próximo atendimento real ainda precisa ser acompanhado como validação de campo.
+- Permanecem três conversas antigas com a última mensagem do cliente posterior à última resposta: Bernardo, que pediu bloqueio e foi encaminhado; Janaina e NK7, que já estavam pausados pelo fluxo antigo. Elas não foram reativadas automaticamente para evitar uma abordagem fora de hora ou sem contexto.
 
 ## Decisão sobre n8n
 
