@@ -176,7 +176,7 @@ class Database:
     async def retry_conversation(self, inbox_ids: list[int], error: str):
         async with await self.connect() as conn:
             await conn.execute("""
-                update whatsapp_bot.gustavo_v2_inbox set status=case when attempts>=6 then 'dead' else 'pending' end,
+                update whatsapp_bot.gustavo_v2_inbox set status='pending',
                 due_at=now()+least(interval '5 minutes',interval '5 seconds'*power(2,least(attempts,6))),error_message=%s
                 where id=any(%s)
             """, (error[:1000], inbox_ids))
