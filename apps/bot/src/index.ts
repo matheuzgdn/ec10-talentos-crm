@@ -516,12 +516,13 @@ async function resolveOutboundChatIds(client: any, phone: string) {
   }
 
   if (typeof client.getNumberId === "function") {
-    const numberId = await client.getNumberId(primary);
-    if (!numberId?._serialized) {
-      throw new Error("Numero nao registrado ou indisponivel no WhatsApp.");
-    }
-    if (!chatIds.includes(numberId._serialized)) {
-      chatIds.unshift(numberId._serialized);
+    try {
+      const numberId = await client.getNumberId(primary);
+      if (numberId?._serialized && !chatIds.includes(numberId._serialized)) {
+        chatIds.unshift(numberId._serialized);
+      }
+    } catch (error) {
+      console.warn("Failed to resolve WhatsApp number id; using phone chat id", error instanceof Error ? error.message : String(error));
     }
   }
 
