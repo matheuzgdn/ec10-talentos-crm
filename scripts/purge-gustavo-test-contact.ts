@@ -2,7 +2,15 @@ import { bookingPool } from "../api/_booking-db.ts";
 
 const phone = process.argv[2]?.replace(/\D/g, "");
 const apply = process.argv.includes("--apply");
+const commercialTest = process.argv.includes("--commercial-test");
 if (!phone) throw new Error("Telefone obrigatorio");
+const allowedTestPhones = new Set([
+  "5531995391330",
+  ...(commercialTest ? ["553198526146"] : []),
+]);
+if (!allowedTestPhones.has(phone)) {
+  throw new Error("Limpeza recusada: use somente o numero dedicado ao laboratorio Gustavo");
+}
 
 const db = await bookingPool.connect();
 try {
@@ -58,6 +66,22 @@ try {
       hasPhone ? [contact.id, phone] : [contact.id],
     )).rows;
   }
+  snapshot.gustavo_v2_contacts = (await db.query(
+    "select * from whatsapp_bot.gustavo_v2_contacts where phone = $1",
+    [phone],
+  )).rows;
+  snapshot.gustavo_v2_inbox = (await db.query(
+    "select * from whatsapp_bot.gustavo_v2_inbox where phone = $1",
+    [phone],
+  )).rows;
+  snapshot.gustavo_v2_outbox = (await db.query(
+    "select * from whatsapp_bot.gustavo_v2_outbox where phone = $1",
+    [phone],
+  )).rows;
+  snapshot.gustavo_v2_turns = (await db.query(
+    "select * from whatsapp_bot.gustavo_v2_turns where phone = $1",
+    [phone],
+  )).rows;
 
   const identifiers = [
     contact.id,
@@ -96,6 +120,9 @@ try {
           and id = any($1::text[])`,
       [snapshot.tarefas.map((task) => task.id)],
     );
+    await db.query("delete from whatsapp_bot.gustavo_v2_outbox where phone = $1", [phone]);
+    await db.query("delete from whatsapp_bot.gustavo_v2_inbox where phone = $1", [phone]);
+    await db.query("delete from whatsapp_bot.gustavo_v2_contacts where phone = $1", [phone]);
     await db.query(
       `delete from whatsapp_bot.ec10_campaign_registrations
         where client_id = $1 or crm_lead_id::text = any($2::text[])`,
@@ -139,7 +166,10 @@ try {
               or app_private.whatsapp_phone_match_key(coalesce(data->>'telefone_e164', data->>'telefone'))
                 = app_private.whatsapp_phone_match_key($1))) cards,
         (select count(*)::int from whatsapp_bot.messages where client_id = $2::uuid) messages,
-        (select count(*)::int from whatsapp_bot.ec10_bookings where client_id = $2::uuid) bookings`,
+        (select count(*)::int from whatsapp_bot.ec10_bookings where client_id = $2::uuid) bookings,
+        (select count(*)::int from whatsapp_bot.gustavo_v2_contacts where phone = $1) gustavo_v2_contacts,
+        (select count(*)::int from whatsapp_bot.gustavo_v2_inbox where phone = $1) gustavo_v2_inbox,
+        (select count(*)::int from whatsapp_bot.gustavo_v2_outbox where phone = $1) gustavo_v2_outbox`,
       [phone, contact.id],
     )).rows[0];
     if (Object.values(remaining).some((value) => value !== 0)) {

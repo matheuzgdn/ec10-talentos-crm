@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Optional
 import psycopg
@@ -125,16 +126,36 @@ class Database:
                 await conn.execute("update whatsapp_bot.gustavo_v2_inbox set status='processing',attempts=attempts+1 where id=any(%s)", (ids,))
                 return {"phone": phone_row["phone"], "rows": rows}
 
-    async def conversation_context(self, phone: str) -> tuple[dict, list[dict], Optional[str]]:
+    async def conversation_context(self, phone: str) -> tuple[dict, list[dict], Optional[str], Optional[str]]:
         async with await self.connect() as conn:
             contact = await (await conn.execute("select client_id,state,status from whatsapp_bot.gustavo_v2_contacts where phone=%s", (phone,))).fetchone()
-            state = {**DEFAULT_STATE, **(contact["state"] or {})}
-            history_rows = await (await conn.execute("""
-                select direction,body,created_at from whatsapp_bot.messages m
-                where m.client_id=%s and body is not null order by created_at desc limit 20
-            """, (contact["client_id"],))).fetchall()
-            history = [{"role": row["direction"], "text": row["body"]} for row in reversed(history_rows)]
-            return state, history, str(contact["client_id"]) if contact["client_id"] else None
+            state = {**deepcopy(DEFAULT_STATE), **(contact["state"] or {})}
+            state["audio_sent"] = list(state.get("audio_sent") or [])
+            turn_rows = await (await conn.execute("""
+                select inbound_text,response_text,created_at
+                from whatsapp_bot.gustavo_v2_turns
+                where phone=%s and status='ok'
+                order by created_at desc limit 8
+            """, (phone,))).fetchall()
+            history: list[dict] = []
+            for row in reversed(turn_rows):
+                if row.get("inbound_text"):
+                    history.append({"role": "user", "text": row["inbound_text"]})
+                if row.get("response_text"):
+                    history.append({"role": "assistant", "text": row["response_text"]})
+            if not history:
+                history_rows = await (await conn.execute("""
+                    select direction,body,created_at from whatsapp_bot.messages m
+                    where m.client_id=%s and body is not null order by created_at desc limit 20
+                """, (contact["client_id"],))).fetchall()
+                history = [{"role": row["direction"], "text": row["body"]} for row in reversed(history_rows)]
+            last_turn = turn_rows[0] if turn_rows else None
+            return (
+                state,
+                history,
+                str(contact["client_id"]) if contact["client_id"] else None,
+                str(last_turn["response_text"]) if last_turn and last_turn.get("response_text") else None,
+            )
 
     async def finish_turn(self, phone: str, inbox_ids: list[int], inbound: str, reply: str, model: str,
                           latency_ms: int, before: dict, after: dict, validation: dict, error: Optional[str] = None):
@@ -184,6 +205,17 @@ class Database:
                 insert into whatsapp_bot.gustavo_v2_outbox(idempotency_key,phone,message_type,payload)
                 values(%s,%s,%s,%s::jsonb) on conflict(idempotency_key) do nothing
             """, (key, phone, message_type, json.dumps(payload)))
+
+    async def supersede_pending_outbox(self, phone: str):
+        """Discard obsolete replies when the lead has already sent a newer message."""
+        async with await self.connect() as conn:
+            await conn.execute("""
+                update whatsapp_bot.gustavo_v2_outbox
+                   set status='dead',error_message='superseded_by_new_inbound'
+                 where phone=%s
+                   and (status in ('queued','failed')
+                     or (status='sending' and created_at<now()-interval '2 minutes'))
+            """, (phone,))
 
     async def claim_outbox(self) -> Optional[dict]:
         async with await self.connect() as conn:

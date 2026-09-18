@@ -23,19 +23,29 @@ class GeminiSDR:
         }, ensure_ascii=False)
         correction = ""
         last_errors: list[str] = []
-        for attempt in range(3):
+        for attempt in range(1):
             try:
-                result = await self.client.aio.models.generate_content(
-                    model=self.model,
-                    contents=prompt + correction,
-                    config=types.GenerateContentConfig(
-                        system_instruction=SYSTEM_INSTRUCTION,
-                        temperature=0.2,
-                        max_output_tokens=1400,
-                        response_mime_type="application/json",
-                        response_schema=Decision,
-                    ),
+                generation = asyncio.create_task(
+                    self.client.aio.models.generate_content(
+                        model=self.model,
+                        contents=prompt + correction,
+                        config=types.GenerateContentConfig(
+                            system_instruction=SYSTEM_INSTRUCTION,
+                            temperature=0.2,
+                            max_output_tokens=700,
+                            response_mime_type="application/json",
+                            response_schema=Decision,
+                        ),
+                    )
                 )
+                done, _ = await asyncio.wait({generation}, timeout=3.0)
+                if not done:
+                    generation.cancel()
+                    generation.add_done_callback(
+                        lambda task: task.exception() if not task.cancelled() else None
+                    )
+                    raise asyncio.TimeoutError()
+                result = generation.result()
                 decision = Decision.model_validate_json(result.text)
                 candidate_state = {**state, **{k: v for k, v in decision.facts.model_dump().items() if v is not None}}
                 last_errors = validate_reply(decision.reply, candidate_state)
@@ -44,9 +54,7 @@ class GeminiSDR:
                 correction = "\nA resposta anterior foi rejeitada por: " + ", ".join(last_errors) + ". Gere outra resposta corrigida."
             except Exception as exc:
                 last_errors = [f"gemini:{type(exc).__name__}"]
-                if attempt == 2:
-                    break
-                await asyncio.sleep(0.7 * (attempt + 1))
+                break
         # A transient/truncated Gemini response must never freeze the WhatsApp
         # conversation. The deterministic flow guards in the worker will turn
         # this minimal decision into the correct next commercial step.

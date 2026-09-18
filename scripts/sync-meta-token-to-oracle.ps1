@@ -31,6 +31,27 @@ if ($env:META_PHONE_NUMBER_ID.Length -lt 10) {
   throw 'O identificador do número oficial EC10 ainda não foi salvo no cofre local.'
 }
 
+$graphVersion = 'v25.0'
+$headers = @{ Authorization = "Bearer $($env:META_SYSTEM_USER_ACCESS_TOKEN)" }
+$phone = Invoke-RestMethod -Method Get -Headers $headers -Uri (
+  "https://graph.facebook.com/$graphVersion/$($env:META_PHONE_NUMBER_ID)" +
+  '?fields=id,display_phone_number,status,platform_type,code_verification_status'
+)
+
+$ready = (
+  [string]$phone.status -eq 'CONNECTED' -and
+  [string]$phone.platform_type -eq 'CLOUD_API' -and
+  [string]$phone.code_verification_status -eq 'VERIFIED'
+)
+if (-not $ready) {
+  throw (
+    'O número comercial ainda não está pronto na Cloud API. ' +
+    "status=$($phone.status); plataforma=$($phone.platform_type); " +
+    "verificação=$($phone.code_verification_status). " +
+    'A configuração ativa do Gustavo foi preservada.'
+  )
+}
+
 $target = "$OracleUser@$OracleHost"
 $existing = & ssh -i $SshKey -o BatchMode=yes -o StrictHostKeyChecking=accept-new $target "sudo cat '$RemoteEnvPath'"
 if ($LASTEXITCODE -ne 0) { throw 'Não foi possível ler a configuração protegida do Oracle.' }
@@ -38,15 +59,18 @@ if ($LASTEXITCODE -ne 0) { throw 'Não foi possível ler a configuração proteg
 $lines = [System.Collections.Generic.List[string]]::new()
 foreach ($line in @($existing)) { $lines.Add([string]$line) }
 
-Set-LineValue -Lines $lines -Key 'META_GRAPH_VERSION' -Value 'v25.0'
+Set-LineValue -Lines $lines -Key 'META_GRAPH_VERSION' -Value $graphVersion
 Set-LineValue -Lines $lines -Key 'META_WABA_ID' -Value $env:META_WABA_ID
 Set-LineValue -Lines $lines -Key 'META_PHONE_NUMBER_ID' -Value $env:META_PHONE_NUMBER_ID
 Set-LineValue -Lines $lines -Key 'META_WHATSAPP_ACCESS_TOKEN' -Value $env:META_SYSTEM_USER_ACCESS_TOKEN
 Set-LineValue -Lines $lines -Key 'META_APP_SECRET' -Value $env:META_APP_SECRET
 Set-LineValue -Lines $lines -Key 'META_WHATSAPP_VERIFY_TOKEN' -Value $env:META_VERIFY_TOKEN
-Set-LineValue -Lines $lines -Key 'GUSTAVO_V2_ENABLED' -Value 'false'
+Set-LineValue -Lines $lines -Key 'GUSTAVO_V2_ENABLED' -Value 'true'
 
 $content = (($lines -join "`n") + "`n")
+$backupSuffix = Get-Date -Format 'yyyyMMdd-HHmmss'
+& ssh -i $SshKey -o BatchMode=yes $target "sudo cp '$RemoteEnvPath' '$RemoteEnvPath.pre-commercial-$backupSuffix'"
+if ($LASTEXITCODE -ne 0) { throw 'Não foi possível criar o backup da configuração ativa no Oracle.' }
 $content | & ssh -i $SshKey -o BatchMode=yes $target "sudo sh -c 'umask 077; cat > $RemoteEnvPath.tmp; chown root:root $RemoteEnvPath.tmp; chmod 600 $RemoteEnvPath.tmp; mv $RemoteEnvPath.tmp $RemoteEnvPath'"
 if ($LASTEXITCODE -ne 0) { throw 'Não foi possível atualizar a configuração protegida do Oracle.' }
 
@@ -64,7 +88,9 @@ if (-not $health) { throw 'O healthcheck do Gustavo V2 falhou após a atualizaç
 [pscustomobject]@{
   synced = $true
   correct_waba = $env:META_WABA_ID
+  commercial_phone = [string]$phone.display_phone_number
   phone_configured = $true
-  gustavo_enabled = $false
+  cloud_api_verified = $true
+  gustavo_enabled = $true
   health = ($health | ConvertFrom-Json)
 } | ConvertTo-Json -Depth 6
