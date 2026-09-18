@@ -52,11 +52,13 @@ for (const unsafe of [
 const indexSource = fs.readFileSync("apps/bot/src/index.ts", "utf8");
 assert.match(indexSource, /withSdrCustomerTurn\(clientState\.id,clientState\.phone,\(\)=>handleEc10SdrTurn/);
 assert.match(indexSource, /withSdrCustomerTurn\(clientId,phone,\(\)=>handleEc10ConversationInternal/);
-assert.match(indexSource, /:sdr_turn:\$\{sdrTurn\.turn\}/);
+assert.doesNotMatch(indexSource, /:sdr_turn:\$\{sdrTurn\.turn\}/);
+assert.match(indexSource, /stage:\s*"awaiting_booking_completion"/);
+assert.match(indexSource, /guardianIdentityPreviouslyContradicted/);
+assert.match(indexSource, /sanitizeBotOutboundBody/);
 
 console.log(JSON.stringify({
-  passed: positiveReplies.length + 13,
-  total: positiveReplies.length + 13,
+  passed: positiveReplies.length + 16,
+  total: positiveReplies.length + 16,
   noWhatsAppSent: true,
 }, null, 2));
-

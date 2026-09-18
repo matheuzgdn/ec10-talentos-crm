@@ -61,6 +61,7 @@ export type BotConversationStage =
   | "awaiting_guardian_confirmation"
   | "awaiting_meeting_date"
   | "awaiting_meeting_time"
+  | "awaiting_booking_completion"
   | "completed";
 
 export type BotConversationState = {
@@ -169,7 +170,8 @@ function whatsappMediaExtension(mimeType: string, fileName?: string | null) {
     "video/mp4": "mp4", "video/quicktime": "mov", "video/webm": "webm",
     "application/pdf": "pdf", "text/plain": "txt", "text/csv": "csv"
   };
-  return extensions[mimeType.toLowerCase()] || "bin";
+  const normalizedMimeType = mimeType.split(";", 1)[0]?.trim().toLowerCase() || "application/octet-stream";
+  return extensions[normalizedMimeType] || "bin";
 }
 
 function safeWhatsappFileName(value: string | null | undefined, fallback: string) {
@@ -192,13 +194,14 @@ export async function storeInboundWhatsappMedia(input: {
   const supabase = getSupabase();
   if (!supabase || !input.base64Data) return null;
 
-  const extension = whatsappMediaExtension(input.mimeType, input.fileName);
+  const normalizedMimeType = input.mimeType.split(";", 1)[0]?.trim().toLowerCase() || "application/octet-stream";
+  const extension = whatsappMediaExtension(normalizedMimeType, input.fileName);
   const fileName = safeWhatsappFileName(input.fileName, `whatsapp-${Date.now()}.${extension}`);
   const storagePath = `${input.clientId}/inbound/${Date.now()}-${randomUUID()}-${fileName}`;
   const buffer = Buffer.from(input.base64Data, "base64");
   const { error: uploadError } = await supabase.storage
     .from("whatsapp-media")
-    .upload(storagePath, buffer, { contentType: input.mimeType || "application/octet-stream", upsert: false });
+    .upload(storagePath, buffer, { contentType: normalizedMimeType, upsert: false });
   if (uploadError) throw uploadError;
 
   const mediaPath = `${whatsappMediaPrefix}${storagePath}`;
@@ -206,7 +209,7 @@ export async function storeInboundWhatsappMedia(input: {
     .from("messages")
     .update({
       media_path: mediaPath,
-      media_mime_type: input.mimeType || null,
+      media_mime_type: normalizedMimeType,
       media_file_name: fileName,
       media_size_bytes: buffer.byteLength
     })
@@ -215,7 +218,7 @@ export async function storeInboundWhatsappMedia(input: {
     .eq("whatsapp_message_id", input.whatsappMessageId);
   if (updateError) throw updateError;
 
-  return { mediaPath, mimeType: input.mimeType, fileName, sizeBytes: buffer.byteLength };
+  return { mediaPath, mimeType: normalizedMimeType, fileName, sizeBytes: buffer.byteLength };
 }
 
 export async function downloadWhatsappMedia(mediaPath: string, fallbackMimeType?: string | null, fallbackFileName?: string | null) {
@@ -2768,6 +2771,39 @@ export async function getBotConversationState(phoneInput: string): Promise<BotCo
 
   if (error) throw error;
   return (data?.[0] as BotConversationState | undefined) ?? null;
+}
+
+export async function fetchDueGustavoRecoveryStates(limit = 20): Promise<BotConversationState[]> {
+  const supabase = getSupabase();
+  const database = getDatabase();
+  const botInstanceId = currentBotInstanceId();
+  const safeLimit = Math.min(50, Math.max(1, Math.round(limit)));
+  if (!supabase && !database) return [];
+
+  if (database) {
+    const { rows } = await database.query<BotConversationState>(`
+      select id, client_id, phone, stage, role_answer, athlete_age, age_group,
+             service_interest, lead_page_url, completed_at, metadata
+      from public.bot_conversation_states
+      where bot_instance_id = $1
+        and metadata->'gustavo'->>'pending' = 'true'
+        and nullif(metadata->'gustavo'->>'dueAt', '')::timestamptz <= now()
+      order by nullif(metadata->'gustavo'->>'dueAt', '')::timestamptz asc
+      limit $2
+    `, [botInstanceId, safeLimit]);
+    return rows;
+  }
+
+  const { data, error } = await supabase!
+    .from("bot_conversation_states")
+    .select("id, client_id, phone, stage, role_answer, athlete_age, age_group, service_interest, lead_page_url, completed_at, metadata")
+    .eq("bot_instance_id", botInstanceId)
+    .contains("metadata", { gustavo: { pending: true } })
+    .lte("metadata->gustavo->>dueAt", new Date().toISOString())
+    .order("updated_at", { ascending: true })
+    .limit(safeLimit);
+  if (error) throw error;
+  return (data ?? []) as BotConversationState[];
 }
 
 export async function fetchPendingCareerMeetingGroupStates(limit = 20): Promise<BotConversationState[]> {

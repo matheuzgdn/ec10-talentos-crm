@@ -8,3 +8,4 @@ Type=oneshot
 User=opc
 WorkingDirectory=/home/opc/cliente-whatsapp-crm
 ExecStart=/usr/bin/python3 scripts/guardi_o_gustavo.py
+SuccessExitStatus=3

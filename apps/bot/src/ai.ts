@@ -124,7 +124,9 @@ export function isAiLeadQualifiedForMeeting(reply: AiSalesReply) {
       || (!isMinor && reply.speakerRole === "atleta")
     ));
   const guardianRuleSatisfied = !isMinor
-    || (reply.speakerRole === "responsavel" && reply.guardianConfirmed);
+    || (reply.speakerRole === "responsavel"
+      && reply.guardianConfirmed
+      && /^[\p{L}][\p{L}'’-]*(?: [\p{L}][\p{L}'’-]*){1,7}$/u.test(reply.responsibleName.trim()));
 
   return reply.meetingRequested
     && reply.qualificationStatus === "qualified"
@@ -154,7 +156,7 @@ const ec10SalesKnowledge = {
   primarySource: "audios comerciais gravados pelo Eric Cena em 14/09/2026, separados pela idade do atleta",
   commercialPrinciple: "O planejamento de carreira vem antes da indicação de qualquer experiência ou viagem. Sem diagnóstico, atletas e famílias tendem a se perder entre peneiras, promessas e caminhos incompatíveis. A EC10 analisa o momento real, organiza a rota e só então indica o produto adequado.",
   adultInternationalPositioning: "Para o atleta adulto que sonha jogar fora do país, a EC10 é especialista em analisar perfil, material, objetivo, disponibilidade e momento esportivo para buscar uma rota internacional compatível. O exterior pode ampliar caminhos, mas não garante aprovação, contrato ou sucesso.",
-  serviceSuccess: "O atendimento comercial é bem-sucedido quando gera uma reunião qualificada com o responsável pelo atleta. Para menores, precisa ser pai, mãe ou responsável legal; para adultos, o próprio atleta pode decidir, mas Anderson deve identificar quem participa da decisão esportiva e financeira.",
+  serviceSuccess: "O atendimento comercial é bem-sucedido quando gera uma reunião qualificada com o responsável pelo atleta. Para menores, precisa ser pai, mãe ou responsável legal; para adultos, o próprio atleta pode decidir, mas Gustavo deve identificar quem participa da decisão esportiva e financeira.",
   services: [
     { id: "plano_carreira", name: "Plano de Carreira", audience: "atletas a partir de 8 anos; para menores, seus responsáveis", pricePolicy: "valores apresentados somente na reunião", includes: "mentoria esportiva, marketing esportivo, assessoria e acompanhamento para buscar oportunidades no Brasil ou exterior; viagens e camps separados" },
     { id: "eurocamp", name: "Eurocamp", audience: "atletas de 14 a 19 anos e seus responsáveis", pricePolicy: "valores apresentados somente na reunião", includes: "preparação, experiência internacional, avaliação e acompanhamento conforme o perfil do atleta" },
@@ -182,7 +184,7 @@ const ec10SalesKnowledge = {
     eurocamp: { discovery: "busca jogos ou avaliação internacional", consideration: "atleta 14–19 tem objetivo e momento esportivo compatíveis", decision: "responsável ou atleta tem prazo, logística e caminho real de investimento" },
     plano_internacional: { discovery: "atleta 20–25 busca avaliação direta em clubes", consideration: "tem perfil, material, disponibilidade e entende que não há garantia", decision: "decisor quer analisar pacote individual, logística e investimento" }
   },
-  customerJourney: ["landing page ou entrada direta", "cadastro CRM", "qualificação Anderson SDR", "reunião com closer", "proposta", "pagamento confirmado pelo financeiro", "passagem à operação", "entrega e pós-venda", "renovação ou próxima experiência compatível"],
+  customerJourney: ["landing page ou entrada direta", "cadastro CRM", "qualificação Gustavo SDR", "reunião com closer", "proposta", "pagamento confirmado pelo financeiro", "passagem à operação", "entrega e pós-venda", "renovação ou próxima experiência compatível"],
   handoff: { preSales: "SDR qualifica e closer conduz reunião e proposta", afterPayment: "somente após pagamento o cliente segue para Pablo e operação; Heitor atende pós-venda; Thaís confirma financeiro", rule: "não prometer operação, vaga ou clube antes de contrato e pagamento" },
   objectionPrinciples: { price: "distinguir falta de informação, necessidade de planejamento e ausência de condição", trust: "explicar processo e limites com prova contextualizada", guarantee: "avaliação e contrato dependem do clube", time: "entender prazo e urgência esportiva", logistics: "mapear viagem, documentos e responsável", decisionMaker: "menor exige responsável; adulto pode decidir e agendar" },
 };
@@ -225,6 +227,12 @@ export function configuredAiPlatform() {
   return preferredTextProviders()[0] ?? config.BOT_AI_PROVIDER;
 }
 
+function cleanPersonName(value: unknown) {
+  if (typeof value !== "string") return "";
+  const name = value.replace(/\s+/g, " ").trim().slice(0, 100);
+  return /^[\p{L}][\p{L}'’-]*(?: [\p{L}][\p{L}'’-]*){0,7}$/u.test(name) ? name : "";
+}
+
 export async function generateEc10SalesReplyWithAi(input: {
   message: string | null | undefined;
   mediaType?: string | null;
@@ -247,7 +255,7 @@ export async function generateEc10SalesReplyWithAi(input: {
   })).filter((item) => item.text || item.mediaType !== "text");
 
   const response = await callTextAi([
-    "Você é Anderson, consultor virtual comercial da EC10 Talentos no WhatsApp. Não se apresente pelo nome em toda resposta. Se perguntarem quem atende, diga Anderson; se perguntarem se é humano, explique com transparência que o atendimento é automatizado com apoio da equipe EC10.",
+    "Você é Gustavo, consultor virtual comercial da EC10 Talentos no WhatsApp. Não se apresente pelo nome em toda resposta. Se perguntarem quem atende, diga Gustavo; se perguntarem se é humano, explique com transparência que o atendimento é automatizado com apoio da equipe EC10.",
     "Identidade institucional obrigatória: a EC10 Talentos é uma empresa de consultoria e desenvolvimento de carreira no futebol. Nunca chame a EC10 de plataforma, aplicativo ou site. Plataforma é somente a Revela Talentos quando ela for citada pelo nome.",
     "Localização confirmada: a EC10 Talentos tem sua base em Belo Horizonte, no bairro Gutierrez. Use essa informação quando o lead perguntar onde fica ou quando a proximidade com BH for relevante. Não invente endereço completo nem confirme atendimento presencial sem validação da equipe.",
     "Conduza o atendimento inteiro de forma humana, próxima e consultiva, em português ou espanhol conforme o lead.",
@@ -321,6 +329,7 @@ export async function generateEc10SalesReplyWithAi(input: {
   const parsed = parseJson(response);
   const rawReply = typeof parsed?.reply === "string" ? parsed.reply.replace(/\s+/g, " ").trim() : "";
   if (!rawReply) return null;
+  if (/```|\bapi_call\b|update_qualification\s*\(|"arguments"\s*:|"role"\s*:\s*"response"/i.test(rawReply)) return null;
   const institutionalReply = rawReply
     .replace(/\b(?:a\s+)?ec10(?:\s+talentos)?\s+(?:é|e)\s+uma\s+plataforma\b/gi, "A EC10 Talentos é uma empresa de consultoria e desenvolvimento de carreira no futebol")
     .replace(/\bec10(?:\s+talentos)?\s+es\s+una\s+plataforma\b/gi, "EC10 Talentos es una empresa de consultoría y desarrollo de carrera en el fútbol")
@@ -337,7 +346,11 @@ export async function generateEc10SalesReplyWithAi(input: {
   const priceSafeReply=!priceSafeReplyRaw.includes('?')&&/\b(?:posso|podemos|quer que|faz sentido)\b/i.test(priceSafeReplyRaw)
     ? priceSafeReplyRaw.replace(/[.]?$/,'?')
     : priceSafeReplyRaw;
-  let reply = priceSafeReply.slice(0, 700);
+  let reply = priceSafeReply
+    .replace(/https?:\/\/\S+/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .trim()
+    .slice(0, 700);
   const allowedIntents = new Set(["information", "qualification", "price", "meeting", "human", "other"]);
   const allowedServices = new Set([
     "plano_internacional", "plano_carreira", "eurocamp", "eurocamp_latam", "mentoria_prime",
@@ -357,6 +370,16 @@ export async function generateEc10SalesReplyWithAi(input: {
   const temperature = parsed?.leadTemperature;
   const contextualRole = conversationRole(input.message,input.profile?.speakerRole || 'outro',input.history || []);
   const speakerRole = contextualRole !== 'outro' ? contextualRole : parsed?.speakerRole;
+  const responsibleName = cleanPersonName(parsed?.responsibleName) || cleanPersonName(input.profile?.responsibleName);
+  const athleteName = cleanPersonName(parsed?.athleteName) || cleanPersonName(input.profile?.athleteName);
+  const messageText = String(input.message || "");
+  if (/\b(?:voce e (?:um )?(?:bot|robo|robô)|e (?:um )?(?:bot|robo|robô)|atendimento automatico|atendimento automático)\b/i.test(messageText)) {
+    reply = "Sou o atendimento virtual Gustavo da EC10, com acompanhamento da nossa equipe. Posso seguir por aqui e, se você preferir, também chamo um consultor.";
+  } else if (/\b(?:campinas|onde fica|qual (?:e |é )?o endereco|qual (?:e |é )?o endereço|atendimento presencial)\b/i.test(messageText)) {
+    reply = "Nossa base fica em Belo Horizonte, no bairro Gutierrez. A conversa comercial pode acontecer online, então atendemos famílias de outras cidades também.";
+  } else if (/https?:\/\/\S+/i.test(messageText) && /\b(?:esse|este) (?:video|vídeo|link|post) (?:mostra|comprova|explica)\b/i.test(reply)) {
+    reply = "Recebi o link. Não consigo validar o conteúdo dele por aqui, mas posso deixar registrado para a equipe analisar e seguir com sua dúvida sem inventar informação.";
+  }
   if(age&&age<18&&speakerRole==='atleta'&&/\b(marcar|agendar|agenda|reuni[aã]o)\b/i.test(reply)) {
     reply=`Como você tem ${age} anos, seu pai, sua mãe ou responsável legal precisa continuar esta conversa para a reunião. Pode pedir para ele chamar por este mesmo WhatsApp?`;
   }
@@ -378,15 +401,16 @@ export async function generateEc10SalesReplyWithAi(input: {
 
   return {
     reply,
-    responsibleName: cleanField(parsed?.responsibleName,100),
-    athleteName: cleanField(parsed?.athleteName,100),
+    responsibleName,
+    athleteName,
     intent: allowedIntents.has(String(parsed?.intent)) ? parsed?.intent as AiSalesReply["intent"] : "other",
     serviceInterest,
     athleteAge: age && age >= 1 && age <= 99 ? age : null,
     leadTemperature: temperature === "frio" || temperature === "quente" ? temperature : "morno",
     handoffRequested: parsed?.handoffRequested === true || parsed?.intent === "human",
     speakerRole: speakerRole === "responsavel" || speakerRole === "atleta" || speakerRole === "gestor" ? speakerRole : "unknown",
-    guardianConfirmed: parsed?.guardianConfirmed === true || speakerRole === "responsavel",
+    guardianConfirmed: input.profile?.guardianConfirmed === true
+      || (parsed?.guardianConfirmed === true && speakerRole === "responsavel" && Boolean(responsibleName)),
     qualificationStatus: qualificationStatus === "qualified" || qualificationStatus === "unqualified" ? qualificationStatus : "more_info",
     qualificationReason: typeof parsed?.qualificationReason === "string" ? parsed.qualificationReason.replace(/\s+/g, " ").trim().slice(0, 220) : "",
     meetingRequested: parsed?.meetingRequested === true,
@@ -414,17 +438,22 @@ export function isBotAiFallbackEnabled() {
 export async function transcribeAudioWithAi(input: { base64Data: string; mimeType: string }) {
   if (!isBotAiEnabled() || config.BOT_AI_AUDIO_ENABLED !== "true") return null;
 
-  const byteLength = Buffer.byteLength(input.base64Data, "base64");
+  const normalizedInput = {
+    ...input,
+    mimeType: input.mimeType.split(";", 1)[0]?.trim().toLowerCase() || "audio/ogg"
+  };
+
+  const byteLength = Buffer.byteLength(normalizedInput.base64Data, "base64");
   if (byteLength <= 0) return null;
 
   if (canUseGroq("audio") && byteLength <= config.GROQ_MAX_AUDIO_BYTES) {
-    const transcript = await transcribeAudioWithGroq(input);
+    const transcript = await transcribeAudioWithGroq(normalizedInput);
     if (transcript) return transcript;
     if (config.BOT_AI_PROVIDER === "groq") return null;
   }
 
   if (canUseOllama("audio") && byteLength <= config.OLLAMA_MAX_AUDIO_BYTES) {
-    const transcript = await transcribeAudioWithOllama(input);
+    const transcript = await transcribeAudioWithOllama(normalizedInput);
     if (transcript) return transcript;
     if (config.BOT_AI_PROVIDER === "ollama") return null;
   }
@@ -436,8 +465,8 @@ export async function transcribeAudioWithAi(input: { base64Data: string; mimeTyp
     [
       {
         inlineData: {
-          mimeType: input.mimeType || "audio/ogg",
-          data: input.base64Data
+          mimeType: normalizedInput.mimeType,
+          data: normalizedInput.base64Data
         }
       },
       {

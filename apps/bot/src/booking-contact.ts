@@ -27,7 +27,7 @@ export function selectBookingContactName(input:{
         metadataName(input.metadata,'bookingContactName'),
         metadataName(input.metadata,'responsibleName'),
         metadataName(input.metadata,'guardianName'),
-        metadataName(input.metadata,'leadName'),
+        ...(input.responsibleRole ? [metadataName(input.metadata,'leadName')] : []),
       ]
     : [metadataName(input.metadata,'bookingContactName'),metadataName(input.metadata,'leadName')];
   const athleteKey=athleteName?.toLocaleLowerCase('pt-BR');

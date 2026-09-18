@@ -22,4 +22,5 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
       - run: node scripts/test-gustavo-fault-injection.mjs
+      - run: node scripts/test-gustavo-2026-09-17-regressions.mjs
       - run: node scripts/test-gustavo-provider-failure.mjs

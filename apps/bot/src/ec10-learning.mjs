@@ -12,7 +12,17 @@ export function conversationRole(message, fallback = 'outro', history = []) {
 // Enforce the same conversational gate in the simulator and the real sender.
 export function singleQuestionReply(value, options = {}) {
   const text = String(value || '').trim();
-  const fallback = String(options.fallback || 'A EC10 começa pelo planejamento da carreira, respeitando o momento do atleta e da família.').trim();
+  const knownRole = options.role && !['outro', 'unknown'].includes(options.role);
+  const knownAge = Number(options.age) >= 8;
+  const fallback = String(options.fallback ?? (
+    !knownRole
+      ? 'Você é o atleta ou está falando como responsável por ele?'
+      : !knownAge
+        ? 'Qual é a idade do atleta?'
+        : options.role === 'atleta' && Number(options.age) < 18
+          ? 'Quem é o responsável que acompanha sua carreira?'
+          : 'Me conta onde o atleta joga ou treina hoje.'
+  )).trim();
   const parts = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [];
   let questions = 0;
   const kept = [];
@@ -20,12 +30,17 @@ export function singleQuestionReply(value, options = {}) {
     const normalized = learningText(part);
     const question = part.includes('?') || /\b(me (conta|fala|diz)|conte|diga)\b.*\b(onde|qual|quanto|quem|como|se voce)\b/.test(normalized);
     if (question && options.role && options.role !== 'outro' && options.role !== 'unknown'
-      && /\b(voce e (o |a )?atleta|fala como (atleta|responsavel)|atleta ou.*responsavel|trajetoria como atleta|filho ou dependente)\b/.test(normalized)) return fallback;
-    if (question && options.age >= 8 && /\b(quantos anos|qual (e )?(a |sua |a sua )?idade|me (fala|conta|diz) (a |sua )?idade)\b/.test(normalized)) return fallback;
+      && /\b(voce e (o |a )?atleta|fala como (atleta|responsavel)|atleta ou.*responsavel|trajetoria como atleta|filho ou dependente)\b/.test(normalized)) continue;
+    if (question && options.age >= 8 && /\b(quantos anos|qual (e )?(a |sua |a sua )?idade|me (fala|conta|diz) (a |sua )?idade)\b/.test(normalized)) continue;
     if (question) {
       // One question mark can still hide two separate requests.
       const asks = normalized.match(/\b(onde|quantos|quanto|qual|quais|quem|ha quanto|como voce)\b/g) || [];
-      if (asks.length > 1 && /\b(e|tambem|alem)\b/.test(normalized)) return fallback;
+      if (asks.length > 1 && /\b(e|tambem|alem)\b/.test(normalized)) {
+        const firstQuestion = part.split(/\s+e\s+(?=(?:onde|quantos|quanto|qual|quais|quem|h[aá] quanto|como voc[eê])\b)/i)[0]?.trim();
+        if (firstQuestion) kept.push(/[?]$/.test(firstQuestion) ? firstQuestion : `${firstQuestion}?`);
+        questions += 1;
+        continue;
+      }
       if (questions++) continue;
     }
     kept.push(part.trim());

@@ -23,7 +23,7 @@ import {
 import {answerEc10SdrQuestion} from './ai.js';
 import {SDR_VERSION, decideEc10Sdr, sdrServiceMenu, sdrOffer, eligibleSdrOffers, explicitSdrHuman, explicitSdrStop, sdrGreeting, type SdrStep} from './sdr-flow.js';
 import { config, hasDirectDatabaseConfig, hasServerSupabaseConfig } from "./config.js";
-import { exactLearningReply, conversationRole, singleQuestionReply } from './ec10-learning.mjs';
+import { conversationRole } from './ec10-learning.mjs';
 import { sendMetaQualityEvent } from "./meta.js";
 import { normalizePollVote, pollParentId, pollVoteMessageId, readWhatsAppPollVotes, serializeWhatsAppKey } from './poll-votes.js';
 import {parseBookingContactName,selectBookingContactName} from './booking-contact.js';
@@ -83,6 +83,7 @@ import {
   fetchBookedEc10MeetingStarts,
   fetchFutureEc10MeetingSellerCounts,
   fetchPendingCareerMeetingGroupStates,
+  fetchDueGustavoRecoveryStates,
   fetchRecentClientMessages,
   fetchEc10LearningBase,
   fetchBotLabWhatsappMessages,
@@ -171,6 +172,7 @@ let whatsappReady = false;
 let processingOutboundQueue = false;
 let processingCareerGroupRepair = false;
 let processingPollRecovery = false;
+let processingGustavoRecovery = false;
 const pollRecoveryCheckedAt = new Map<string, number>();
 let lastReadyMaintenanceAt = 0;
 let aiFallbackUsage = { day: "", count: 0 };
@@ -1735,15 +1737,33 @@ function normalizeOutboundLockValue(value?: string | null) {
   return value?.trim().replace(/\s+/g, " ").toLowerCase() || "";
 }
 
+function sanitizeBotOutboundBody(value: string) {
+  const raw = String(value || "").trim();
+  if (/```|\bapi_call\b|update_qualification\s*\(|"arguments"\s*:|"role"\s*:\s*"response"/i.test(raw)) {
+    return "Tive uma falha ao montar a resposta e não vou te enviar informação incompleta. Pode repetir sua última mensagem?";
+  }
+  const withoutObsoleteLinks = raw
+    .replace(/https?:\/\/cliente-whatsapp-crm\.vercel\.app\/\S*/gi, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return withoutObsoleteLinks || "Quando chegarmos à agenda, eu envio o link oficial da EC10 por aqui.";
+}
+
+function outboundCanonicalContent(input: {body?:string|null;mediaPath?:string|null}) {
+  if (input.mediaPath) return `path:${normalizeOutboundLockValue(input.mediaPath)}`;
+  const bookingUrl = input.body?.match(/https:\/\/ec10talentos\.com\/agendar[^\s]*/i)?.[0];
+  if (bookingUrl) return `booking:${normalizeOutboundLockValue(bookingUrl)}`;
+  return `body:${normalizeOutboundLockValue(input.body)}`;
+}
+
 function buildOutboundSendLockKey(input: {
   clientId: string;
   body?: string | null;
   mediaType: "text" | "audio" | "image" | "document" | "poll";
   mediaPath?: string | null;
 }) {
-  const content = input.mediaPath
-    ? `path:${normalizeOutboundLockValue(input.mediaPath)}`
-    : `body:${normalizeOutboundLockValue(input.body)}`;
+  const content = outboundCanonicalContent(input);
   return `${input.clientId}:${input.mediaType}:${content}`;
 }
 
@@ -1764,7 +1784,10 @@ async function shouldSendBotOutbound(input: {
     }
   }
   const windowMinutes = input.windowMinutes
-    ?? (input.mediaType === "audio" ? 24 * 60 : input.mediaType === "poll" ? 10 : 5);
+    ?? (input.mediaType === "audio" ? 24 * 60
+      : input.mediaType === "poll" ? 10
+        : /https:\/\/ec10talentos\.com\/agendar/i.test(input.body || "") ? 60
+          : 5);
 
   const recentOutboundCount = await countRecentOutboundChatMessages({
     clientId: input.clientId,
@@ -1823,7 +1846,7 @@ async function shouldSendBotOutbound(input: {
     mediaPath: input.mediaPath ?? null
   });
   const lockAcquired = await tryAcquireBotDedupeLock({
-      key: `whatsapp:outbound:${lockKey}${sdrTurn&&input.mediaType!=='audio'?`:sdr_turn:${sdrTurn.turn}`:''}`,
+      key: `whatsapp:outbound:${lockKey}`,
     scope: "whatsapp_outbound",
     clientId: input.clientId,
     phone: input.phone ?? null,
@@ -1852,10 +1875,6 @@ async function shouldSendBotOutbound(input: {
     });
     return false;
   }
-
-  // Repeating the next-action menu after a NEW customer message is intentional.
-  // The turn-scoped lock above still suppresses duplicate handling of that same message.
-  if(sdrTurn&&input.mediaType!=='audio')return true;
 
   const duplicate = await hasRecentOutboundChatMessage({
     clientId: input.clientId,
@@ -2008,20 +2027,7 @@ function nextPendingAckRetryAt(attempts: number) {
 }
 
 async function sendBotText(client: any, chatId: string, clientId: string, body: string, delayRange?: [number, number]) {
-  const turn = sdrOutboundContext.getStore();
-  if (turn?.clientId === clientId && turn.learning && !turn.learningUsed
-    && ['discovery','awaiting_age','diagnosing','awaiting_guardian_confirmation'].includes(turn.learning.stage)
-    && !explicitSdrStop(turn.learning.message) && !explicitSdrHuman(turn.learning.message)
-    && body !== 'Bem-vindo à EC10 Talentos!') {
-    turn.learningUsed = true;
-    try {
-      const learned = exactLearningReply(await fetchEc10LearningBase(), turn.learning);
-      if (learned) body = learned.reply;
-    } catch { console.warn('EC10 learning unavailable; preserving approved flow'); }
-  }
-  if (turn?.clientId === clientId && turn.learning && body !== 'Bem-vindo à EC10 Talentos!') {
-    body = singleQuestionReply(body,{...turn.learning});
-  }
+  body = sanitizeBotOutboundBody(body);
   return withOutboundSendLock(buildOutboundSendLockKey({ clientId, body, mediaType: "text" }), async () => {
     const pauseReason = await getImmediateOutboundPauseReason();
     if (pauseReason) {
@@ -2201,6 +2207,19 @@ function hasConfirmedGuardian(state: BotConversationState | null) {
     || role.includes("mae")
     || role.includes("responsavel legal");
   return metadata.guardianConfirmed === true && responsibleRole;
+}
+
+function isAmbiguousGuardianAffirmation(value: string | null | undefined) {
+  return /^(?:1|01|sim|s|ss)$/i.test(String(value || "").trim());
+}
+
+function guardianIdentityPreviouslyContradicted(state: BotConversationState) {
+  const role = normalizeText(state.role_answer || "");
+  const metadata = asMetadataRecord(state.metadata);
+  return role === "atleta"
+    || role === "nao responsavel"
+    || role === "nao_responsavel"
+    || metadata.guardianConfirmed === false && Boolean(metadata.guardianDeniedAt);
 }
 
 async function askGuardianConfirmation(input: {
@@ -3024,6 +3043,10 @@ async function askMeetingDate(client: any, chatId: string, clientId: string, pho
     : previous?.service_interest === "eurocamp" ? "eurocamp" : "plano_carreira";
   const minor=!!previous?.athlete_age&&previous.athlete_age<18;
   const knownRole=previous?.role_answer==='responsavel';
+  if (minor && !hasConfirmedGuardian(previous)) {
+    if (previous) await askGuardianConfirmation({ client, chatId, clientId, phone, previous });
+    return;
+  }
   const contactName=selectBookingContactName({metadata:previous?.metadata,minor,responsibleRole:knownRole});
   if(!contactName) {
     await persistEc10State({clientId,phone,previous,stage:'awaiting_interest',completedAt:null,
@@ -3037,14 +3060,11 @@ async function askMeetingDate(client: any, chatId: string, clientId: string, pho
     existingUrl:typeof previous?.metadata?.bookingUrl==='string'?previous.metadata.bookingUrl:undefined});
   const guardianNote = previous?.athlete_age && previous.athlete_age < 18
     ? "Como o atleta e menor de idade, o responsavel precisa fazer a reserva. " : "";
-  await sendBotText(client, chatId, clientId,
-    `${guardianNote}Sua agenda já está com o plano, nome, WhatsApp e idade preenchidos. Escolha um dia e horário nos próximos 7 dias e confirme: ${bookingUrl}`,
-    [1200, 2400]);
   await persistEc10State({
     clientId,
     phone,
     previous,
-    stage: "awaiting_interest",
+    stage: "awaiting_booking_completion",
     completedAt: null,
     metadata: {
       bookingUrl,
@@ -3054,6 +3074,48 @@ async function askMeetingDate(client: any, chatId: string, clientId: string, pho
       aiRecoveryAttempts: 0
     }
   });
+  await sendBotText(client, chatId, clientId,
+    `${guardianNote}Sua agenda já está com o plano, nome, WhatsApp e idade preenchidos. Escolha primeiro o dia, depois o horário, e confirme.\n\n${bookingUrl}`,
+    [700, 1400]);
+}
+
+function bookingMessageIntent(body: string | null | undefined) {
+  const text = normalizeText(body || "");
+  if (/\b(reagendar|re agendar|remarcar|mudar (?:o )?horario|mudar (?:a )?data)\b/.test(text)) return "reschedule";
+  if (/\b(cancelar|desmarcar|nao vou poder|nao poderei|nao consigo ir)\b/.test(text)) return "cancel";
+  if (/\b(link|agenda|agendar|marcar reuniao)\b/.test(text)) return "link";
+  if (/\b(onde|local|endereco|presencial|campinas)\b/.test(text)) return "location";
+  if (/^(?:ok|okay|certo|beleza|blz|obrigad[oa]|valeu|combinado)$/i.test(String(body || "").trim())) return "ack";
+  return "other";
+}
+
+async function handleBookingCompletionConversation(input:{
+  client:any;chatId:string;clientId:string;phone:string;state:BotConversationState;body:string|null;
+}) {
+  const intent = bookingMessageIntent(input.body);
+  const metadata = asMetadataRecord(input.state.metadata);
+  const bookingUrl = typeof metadata.bookingUrl === "string" ? metadata.bookingUrl : null;
+  if (intent === "cancel") {
+    await persistEc10State({clientId:input.clientId,phone:input.phone,previous:input.state,stage:"completed",
+      completedAt:new Date().toISOString(),metadata:{bookingCancelledBeforeConfirmationAt:new Date().toISOString()}});
+    await sendBotText(input.client,input.chatId,input.clientId,"Tudo certo. Como a reserva ainda não estava confirmada, encerrei esta tentativa. Quando quiser retomar, é só chamar.",[400,800]);
+    return true;
+  }
+  if (intent === "location") {
+    await sendBotText(input.client,input.chatId,input.clientId,"Nossa base fica em Belo Horizonte, no bairro Gutierrez. A reunião comercial é online; para confirmar, escolha o dia e o horário no link que enviei acima.",[400,800]);
+    return true;
+  }
+  if ((intent === "link" || intent === "reschedule") && bookingUrl) {
+    await sendBotText(input.client,input.chatId,input.clientId,
+      `${intent === "reschedule" ? "Como a reunião ainda não foi confirmada, você pode escolher outro dia e horário no mesmo link:" : "Claro. Este é o link oficial da sua agenda:"}\n\n${bookingUrl}`,[400,800]);
+    return true;
+  }
+  if (intent === "ack") {
+    await sendBotText(input.client,input.chatId,input.clientId,"Combinado. O agendamento só fica confirmado depois que você escolher o dia e o horário no link. Assim que concluir, a confirmação chega neste WhatsApp.",[400,800]);
+    return true;
+  }
+  await sendBotText(input.client,input.chatId,input.clientId,"Sua reunião ainda não foi confirmada. Se ficou alguma dúvida antes de escolher o dia e o horário, pode me falar por aqui.",[400,800]);
+  return true;
 }
 
 async function askMeetingTime(
@@ -3923,6 +3985,32 @@ async function handleEc10AiConversation(
 ) {
   const existingFlowState = await getBotConversationState(clientState.phone);
   const greeting=sdrGreeting(body);
+  if(existingFlowState?.stage==='completed') {
+    const intent=bookingMessageIntent(body);
+    const completedMetadata=asMetadataRecord(existingFlowState.metadata);
+    const url=typeof completedMetadata.bookingUrl==='string'?completedMetadata.bookingUrl:null;
+    const hasMeeting=!!asMetadataRecord(completedMetadata.meeting).bookingId||!!completedMetadata.bookingId;
+    if(intent==='ack') {
+      await sendBotText(client,chatId,clientState.id,hasMeeting
+        ? 'Combinado. Sua reunião está registrada na agenda. Se precisar de ajuda, pode chamar por aqui.'
+        : 'Combinado. Quando quiser retomar, é só chamar por aqui.',[400,800]);
+      return true;
+    }
+    if(intent==='location') {
+      await sendBotText(client,chatId,clientState.id,'Nossa base fica em Belo Horizonte, no bairro Gutierrez. As reuniões comerciais podem acontecer online.',[400,800]);
+      return true;
+    }
+    if((intent==='reschedule'||intent==='link')&&url) {
+      await sendBotText(client,chatId,clientState.id,`${intent==='reschedule'?'Para escolher outro horário, abra sua reserva pelo mesmo link:':'Este é o link da sua reserva:'}\n\n${url}`,[400,800]);
+      return true;
+    }
+    if(intent==='cancel'&&hasMeeting) {
+      await sendBotText(client,chatId,clientState.id,'Vou encaminhar seu pedido de cancelamento para a equipe conferir a reserva e evitar qualquer erro. Não precisa repetir os dados.',[400,800]);
+      await appendClientTags(clientState.id,['cancelamento_reuniao_solicitado','consultor_responsavel']);
+      await updateClientAiProfile({clientId:clientState.id,handoffRequested:true,automationPauseRequested:true,leadTemperature:'quente'});
+      return true;
+    }
+  }
   if(greeting&&existingFlowState?.stage==='completed') {
     const hasMeeting=!!asMetadataRecord(existingFlowState.metadata?.meeting).bookingId||!!existingFlowState.metadata?.bookingId;
     await sendBotText(client,chatId,clientState.id,`${greeting} ${hasMeeting?'Como posso te ajudar com a reunião que você agendou?':'Como posso te ajudar hoje?'}`,[500,1000]);
@@ -4008,6 +4096,17 @@ async function handleEc10AiConversation(
 
   const history = await fetchRecentClientMessages(clientState.id, 14);
   const leadMetadata=asMetadataRecord(existingFlowState?.metadata);
+  const storedAiProfile=(clientState.attribution_metadata?.ai_sdr as Record<string, unknown> | undefined) ?? {};
+  const stateRole=existingFlowState?.role_answer==='responsavel'||existingFlowState?.role_answer==='atleta'||existingFlowState?.role_answer==='gestor'
+    ? existingFlowState.role_answer
+    : null;
+  const mergedAiProfile={
+    ...storedAiProfile,
+    ...(stateRole?{speakerRole:stateRole}:{}),
+    ...(leadMetadata.guardianConfirmed===true?{guardianConfirmed:true}:{}),
+    ...(typeof leadMetadata.responsibleName==='string'?{responsibleName:leadMetadata.responsibleName}:{}),
+    ...(typeof leadMetadata.athleteName==='string'?{athleteName:leadMetadata.athleteName}:{}),
+  } as AiSalesProfile;
   const aiReply = await generateEc10SalesReplyWithAi({
     athleteAge: existingFlowState?.athlete_age || clientState.athlete_age || null,
     learningStage: existingFlowState?.stage === 'awaiting_guardian_confirmation' ? 'awaiting_guardian_confirmation' : 'diagnosing',
@@ -4015,7 +4114,7 @@ async function handleEc10AiConversation(
     mediaType,
     history,
     serviceInterest: clientState.service_interest,
-    profile: (clientState.attribution_metadata?.ai_sdr as Record<string, unknown> | undefined) ?? null,
+    profile: mergedAiProfile,
     campaignProduct: existingFlowState?.metadata?.funnelKey === "ec10_campaign_landing_pages" ? {
       id: String(existingFlowState.metadata.campaignProductId || ""),
       name: String(existingFlowState.metadata.campaignProductName || ""),
@@ -4067,14 +4166,19 @@ async function handleEc10AiConversation(
     return true;
   }
 
-  if(existingFlowState&&(aiReply.responsibleName||aiReply.athleteName)) {
+  if(existingFlowState) {
     await persistEc10State({clientId:clientState.id,phone:clientState.phone,previous:existingFlowState,
-      stage:existingFlowState.stage,metadata:{
+      stage:existingFlowState.stage,
+      roleAnswer:aiReply.speakerRole==='unknown'?existingFlowState.role_answer:aiReply.speakerRole,
+      athleteAge:aiReply.athleteAge??existingFlowState.athlete_age,
+      serviceInterest:aiReply.serviceInterest??existingFlowState.service_interest,
+      metadata:{
         ...(aiReply.responsibleName?{responsibleName:aiReply.responsibleName}:{}),
-        ...(aiReply.athleteName?{athleteName:aiReply.athleteName}:{})
+        ...(aiReply.athleteName?{athleteName:aiReply.athleteName}:{}),
+        ...(aiReply.guardianConfirmed?{guardianConfirmed:true}:{}),
+        aiStateSynchronizedAt:new Date().toISOString()
       }});
   }
-  await sendBotText(client, chatId, clientState.id, aiReply.reply, [900, 1900]);
   const qualifiesForMeeting = isAiLeadQualifiedForMeeting(aiReply);
   const ericAudioPath = qualifiesForMeeting || clientState.athlete_age
     ? null
@@ -4108,6 +4212,7 @@ async function handleEc10AiConversation(
     objectionCategory:aiReply.objectionCategory,
     recommendedNextStep: aiReply.recommendedNextStep,
   });
+  await sendBotText(client, chatId, clientState.id, aiReply.reply, [500, 1000]);
 
   if (!existingFlowState && !aiReply.athleteAge && !clientState.athlete_age) {
     await persistEc10State({
@@ -4205,6 +4310,79 @@ async function handleEc10AiConversation(
   return true;
 }
 
+async function handleGustavoPrimaryRoute(
+  client:any,
+  chatId:string,
+  clientState:ClientAutomationState,
+  body:string|null,
+  mediaType="text",
+) {
+  const schedulingState = await getBotConversationState(clientState.phone);
+  if (schedulingState?.metadata?.professionalAiSdr===true && schedulingState.stage==='awaiting_interest') {
+    return handleEc10AiConversation(client,chatId,clientState,body,mediaType);
+  }
+  if (schedulingState && schedulingState.stage !== "completed") {
+    return handleEc10Conversation(client,chatId,clientState.id,clientState.phone,body,mediaType);
+  }
+  return handleEc10AiConversation(client,chatId,clientState,body,mediaType);
+}
+
+async function saveGustavoRecoveryPatch(state:BotConversationState,patch:Record<string,unknown>) {
+  const latest=await getBotConversationState(state.phone)??state;
+  const metadata=asMetadataRecord(latest.metadata);
+  const gustavo=asMetadataRecord(metadata.gustavo);
+  return persistEc10State({
+    clientId:latest.client_id,
+    phone:latest.phone,
+    previous:latest,
+    stage:latest.stage,
+    metadata:{...metadata,gustavo:{...gustavo,...patch},sdrActiveEngine:"gustavo_primary"}
+  });
+}
+
+async function processGustavoRecoveryState(client:any,state:BotConversationState) {
+  const clientState=await getClientAutomationStateById(state.client_id);
+  const metadata=asMetadataRecord(state.metadata);
+  const gustavo=asMetadataRecord(metadata.gustavo);
+  if(!clientState||clientState.bot_paused) {
+    await saveGustavoRecoveryPatch(state,{pending:false,recoverySkippedAt:new Date().toISOString(),recoverySkipReason:"client_paused_or_missing"});
+    return;
+  }
+  const history=await fetchRecentClientMessages(clientState.id,12);
+  const latestInbound=[...history].reverse().find(item=>item.direction==='inbound');
+  const latestOutbound=[...history].reverse().find(item=>item.direction==='outbound');
+  if(!latestInbound) {
+    await saveGustavoRecoveryPatch(state,{pending:false,recoverySkippedAt:new Date().toISOString(),recoverySkipReason:"no_inbound"});
+    return;
+  }
+  if(latestOutbound&&Date.parse(latestOutbound.createdAt)>=Date.parse(latestInbound.createdAt)) {
+    await saveGustavoRecoveryPatch(state,{pending:false,pendingText:"",recoveryResolvedAt:new Date().toISOString(),recoveryResult:"already_answered"});
+    return;
+  }
+  const body=typeof gustavo.pendingText==='string'&&gustavo.pendingText.trim()?gustavo.pendingText.trim():latestInbound.body;
+  const chatId=typeof gustavo.chatId==='string'&&gustavo.chatId.trim()?gustavo.chatId:`${clientState.phone}@c.us`;
+  try {
+    await handleGustavoPrimaryRoute(client,chatId,clientState,body,latestInbound.mediaType||"text");
+    await saveGustavoRecoveryPatch(state,{pending:false,pendingText:"",retryCount:0,recoveryResolvedAt:new Date().toISOString(),recoveryResult:"reprocessed"});
+    await recordTrafficEvent({clientId:clientState.id,phone:clientState.phone,eventType:"gustavo_recovery_processed",channel:"whatsapp",platform:configuredAiPlatform(),metadata:{source:"python_guardian",stage:state.stage}});
+  } catch(error) {
+    const retryCount=Math.max(0,Number(gustavo.retryCount)||0)+1;
+    const exhausted=retryCount>=5;
+    await saveGustavoRecoveryPatch(state,{
+      pending:!exhausted,
+      retryCount,
+      dueAt:new Date(Date.now()+Math.min(120_000,15_000*retryCount)).toISOString(),
+      lastRecoveryErrorAt:new Date().toISOString(),
+      lastRecoveryError:error instanceof Error?error.message.slice(0,180):"recovery_failed"
+    });
+    if(exhausted) {
+      await appendClientTags(clientState.id,["ia_transferencia_humana","consultor_responsavel"]);
+      await updateClientAiProfile({clientId:clientState.id,handoffRequested:true,leadTemperature:"quente"});
+    }
+    throw error;
+  }
+}
+
 async function beginEc10Sdr(client:any,chatId:string,clientId:string,phone:string,previous:BotConversationState,age:number) {
   const menu=sdrServiceMenu(age,typeof previous.metadata?.campaignProductName==='string'?previous.metadata.campaignProductName:undefined);
   const plan=getEc10LeadPlan(age)!;
@@ -4255,7 +4433,7 @@ async function handleAndersonNaturalDiscoveryBeforeAge(input:{client:any;chatId:
   const greeting=sdrGreeting(input.body);
   const capturedAge=extractAthleteAge(input.body);
 
-  if(phase==='awaiting_age_natural'&&capturedAge)return false;
+  if(capturedAge)return false;
 
   if(phase==='opening'&&greeting) {
     await persistEc10State({clientId:input.clientId,phone:input.phone,previous:input.state,stage:'awaiting_age',completedAt:null,
@@ -4265,7 +4443,12 @@ async function handleAndersonNaturalDiscoveryBeforeAge(input:{client:any;chatId:
   }
 
   if(phase==='opening'||phase==='awaiting_context'||phase==='awaiting_role') {
-    const role=inferAndersonSpeakerRole(input.body);
+    const storedRole=input.state.role_answer==='atleta'||input.state.role_answer==='responsavel'
+      ? input.state.role_answer
+      : metadata.speakerRole==='atleta'||metadata.speakerRole==='responsavel'
+        ? metadata.speakerRole
+        : null;
+    const role=inferAndersonSpeakerRole(input.body) || storedRole;
     if(!role) {
       const prefix=phase==='awaiting_context'&&input.body?.trim()
         ? `${firstName?`${firstName}, `:''}quero entender seu momento sem transformar isso num questionário.`
@@ -4322,10 +4505,10 @@ async function beginEc10ProfessionalSdr(client:any,chatId:string,clientId:string
   const purchaseStage=product?'consideracao':'descoberta';
   const next=await persistEc10State({clientId,phone,previous,stage:'awaiting_interest',athleteAge:age,ageGroup:plan.ageGroup,
     serviceInterest:product?previous.service_interest:'nao_definido',completedAt:null,
-    metadata:{professionalAiSdr:true,sdrPersona:'anderson',sdrVersion:SDR_VERSION,purchaseStage,
+    metadata:{professionalAiSdr:true,sdrPersona:'gustavo',sdrVersion:SDR_VERSION,purchaseStage,
       crmRegistered:registered,leadName:rawName||undefined,ageCapturedAt:new Date().toISOString()}});
   await updateClientAiProfile({clientId,athleteAge:age,leadTemperature:product?'morno':'frio'});
-  await recordTrafficEvent({clientId,phone,eventType:'anderson_sdr_started',channel:'whatsapp',platform:'whatsapp',athleteAge:age,
+  await recordTrafficEvent({clientId,phone,eventType:'gustavo_sdr_started',channel:'whatsapp',platform:'whatsapp',athleteAge:age,
     metadata:{registered,product,purchaseStage,version:SDR_VERSION}});
   const role=previous.role_answer==='responsavel'?'responsavel':previous.role_answer==='atleta'?'atleta':null;
   const paths=eligibleSdrOffers(age).map(item=>item.name);
@@ -4498,6 +4681,10 @@ async function handleEc10ConversationInternal(client: any, chatId: string, clien
     return true;
   }
 
+  if (currentState.stage === "awaiting_booking_completion") {
+    return handleBookingCompletionConversation({client,chatId,clientId,phone,state:currentState,body});
+  }
+
   if (currentState.stage === "completed") {
     return true;
   }
@@ -4558,6 +4745,20 @@ async function handleEc10ConversationInternal(client: any, chatId: string, clien
   }
 
   if (currentState.stage === "awaiting_guardian_confirmation") {
+    if (isAmbiguousGuardianAffirmation(body) && guardianIdentityPreviouslyContradicted(currentState)) {
+      await persistEc10State({
+        clientId, phone, previous: currentState, stage: "awaiting_guardian_confirmation", completedAt: null,
+        metadata: { guardianConfirmed: false, guardianIdentityRequiredAt: new Date().toISOString() }
+      });
+      await sendBotText(
+        client,
+        chatId,
+        clientId,
+        "Como você é o atleta e ainda é menor, preciso que seu pai, sua mãe ou responsável legal mande uma mensagem neste WhatsApp e informe o nome completo. Aí eu libero a agenda com segurança.",
+        [500, 1000]
+      );
+      return true;
+    }
     if (isGuardianConfirmation(body)) {
       const confirmedAt = new Date().toISOString();
       const savedState = await persistEc10State({
@@ -5968,12 +6169,7 @@ async function main() {
         const chatId = serializeWhatsAppKey(vote.parentMessage?.to) || normalized.voter;
 
         if (config.BOT_AI_MODE === "primary") {
-          const schedulingState = await getBotConversationState(activeClientState.phone);
-          if (schedulingState && schedulingState.stage !== "completed") {
-            await handleEc10Conversation(client, chatId, activeClientState.id, activeClientState.phone, selectedBody, "text");
-          } else {
-            await handleEc10AiConversation(client, chatId, activeClientState, selectedBody, "text");
-          }
+          await handleGustavoPrimaryRoute(client,chatId,activeClientState,selectedBody,"text");
           return;
         }
 
@@ -6063,14 +6259,7 @@ async function main() {
           }
 
           if (config.BOT_AI_MODE === "primary") {
-            const schedulingState = await getBotConversationState(clientState.phone);
-            if (schedulingState?.metadata?.professionalAiSdr===true&&schedulingState.stage==='awaiting_interest') {
-              await handleEc10AiConversation(client,message.from,clientState,messageBody,mediaType);
-            } else if (schedulingState && schedulingState.stage !== "completed") {
-              await handleEc10Conversation(client, message.from, clientState.id, clientState.phone, messageBody, mediaType);
-            } else {
-              await handleEc10AiConversation(client, message.from, clientState, messageBody, mediaType);
-            }
+            await handleGustavoPrimaryRoute(client,message.from,clientState,messageBody,mediaType);
             return;
           }
 
@@ -6124,6 +6313,21 @@ async function main() {
     } catch (error) { console.error('Failed to recover pending poll votes',error); }
     finally { processingPollRecovery=false; }
   }, 15_000);
+
+  setInterval(async () => {
+    if(processingGustavoRecovery||!isCurrentWhatsAppClient(client)||!whatsappReady||currentBotStatus!=="ready"||!isWhatsAppConnected())return;
+    processingGustavoRecovery=true;
+    try {
+      for(const state of await fetchDueGustavoRecoveryStates(5)) {
+        try {await processGustavoRecoveryState(client,state);}
+        catch(error) {console.warn("Gustavo recovery deferred",error instanceof Error?error.message:"recovery_failed");}
+      }
+    } catch(error) {
+      console.warn("Gustavo recovery scheduler unavailable",error instanceof Error?error.message:"recovery_query_failed");
+    } finally {
+      processingGustavoRecovery=false;
+    }
+  },3_000);
 
   setInterval(async () => {
     if (processingOutboundQueue) return;

@@ -19,6 +19,7 @@ export type Ec10ConversationStage =
   | "awaiting_guardian_confirmation"
   | "awaiting_meeting_date"
   | "awaiting_meeting_time"
+  | "awaiting_booking_completion"
   | "completed";
 
 export type Ec10AudioItem = {
