@@ -213,18 +213,29 @@ def sanitize_ai_reply(reply: str, state: dict) -> str:
     """Remove only repetitive conversational ticks without replacing AI content."""
     text = " ".join(reply.split()).strip()
     name = re.escape(str(state.get("contact_name") or ""))
-    optional_name = rf"(?:{name}\s*[,!.]?\s*)?" if name else ""
+    # Only remove a complete, standalone acknowledgement.  The previous
+    # expression accepted no separator after the tick, so it removed the
+    # ``entendi`` prefix from both ``Entendido`` and ``Entendi que``.  That
+    # produced visibly broken messages such as ``Do, Davi`` and ``Que está``.
+    tick = r"(?:entendi|entendid[oa]|perfeito|que legal|legal|[oó]timo)"
+    separator = r"\s*[,!.:;-]\s*"
+    optional_named_address = rf"(?:{name}{separator})?" if name else ""
     text = re.sub(
-        rf"^(?:entendi|perfeito|que legal|legal|[oó]timo)\s*[,!.]?\s*{optional_name}",
+        rf"^{tick}\b{separator}{optional_named_address}",
         "",
         text,
+        count=1,
         flags=re.I,
     ).strip()
     if state.get("company_intro_sent"):
+        greeting = r"(?:oi|ol[aá]|fala|bom dia|boa tarde|boa noite)"
+        greeting_separator = r"(?:\s*[,!.:;-]\s*|\s+)"
+        optional_greeting_name = rf"(?:{name}\s*[,!.:;-]\s*)?" if name else ""
         text = re.sub(
-            rf"^(?:oi|ol[aá]|fala|bom dia|boa tarde|boa noite)\s*[,!.]?\s*{optional_name}",
+            rf"^{greeting}\b{greeting_separator}{optional_greeting_name}",
             "",
             text,
+            count=1,
             flags=re.I,
         ).strip()
     if text:

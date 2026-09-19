@@ -173,6 +173,26 @@ def test_style_sanitizer_keeps_ai_content_and_removes_repetitive_tick():
     assert reply == "Para atletas de 15 anos, o Plano de Carreira organiza os próximos passos."
 
 
+def test_style_sanitizer_never_cuts_entendi_that_belongs_to_a_sentence():
+    state = {**DEFAULT_STATE, "contact_name": "Davi", "company_intro_sent": True}
+    reply = "Entendi que está nos conhecendo agora, Davi! Você fala como responsável?"
+    assert sanitize_ai_reply(reply, state) == reply
+
+
+def test_style_sanitizer_removes_the_whole_entendido_address_not_a_substring():
+    state = {**DEFAULT_STATE, "contact_name": "Davi", "company_intro_sent": True}
+    reply = sanitize_ai_reply(
+        "Entendido, Davi. Como você é o responsável, qual é o nome do atleta?", state
+    )
+    assert reply == "Como você é o responsável, qual é o nome do atleta?"
+
+
+def test_style_sanitizer_never_cuts_words_that_begin_like_a_greeting():
+    state = {**DEFAULT_STATE, "contact_name": "Davi", "company_intro_sent": True}
+    reply = "Oito anos é uma fase importante. O atleta já treina?"
+    assert sanitize_ai_reply(reply, state) == reply
+
+
 def test_style_sanitizer_removes_repeated_greeting_after_intro():
     state = {**DEFAULT_STATE, "contact_name": "Sandra", "company_intro_sent": True}
     assert sanitize_ai_reply("Oi, Sandra! Vamos continuar do ponto em que paramos.", state) == (
