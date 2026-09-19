@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from pydantic import BaseModel, Field
 from .config import get_settings
 from .worker import Worker
 
@@ -22,6 +25,17 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="Gustavo V2", version="2.0.0", lifespan=lifespan)
 
 
+class OracleTurnRequest(BaseModel):
+    phone: str = Field(min_length=8, max_length=20)
+    message_id: str = Field(min_length=3, max_length=300)
+    inbound: str = Field(min_length=1, max_length=5000)
+    client_id: str = Field(min_length=8, max_length=100)
+    known_name: str | None = Field(default=None, max_length=100)
+    known_age: int | None = Field(default=None, ge=6, le=40)
+    lead_source: str | None = Field(default=None, max_length=120)
+    service_interest: str | None = Field(default=None, max_length=80)
+
+
 @app.get("/health")
 async def health():
     database = await worker.db.health()
@@ -34,3 +48,8 @@ async def health():
         "database": database,
         "loop_errors": dict(worker.loop_errors),
     }
+
+
+@app.post("/oracle/respond")
+async def oracle_respond(turn: OracleTurnRequest):
+    return await worker.oracle_turn(**turn.model_dump())

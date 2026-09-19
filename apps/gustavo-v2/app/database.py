@@ -199,6 +199,42 @@ class Database:
                 recent_replies,
             )
 
+    async def ensure_oracle_contact(self, phone: str, client_id: str):
+        async with await self.connect() as conn:
+            await conn.execute("""
+                insert into whatsapp_bot.gustavo_v2_contacts(phone,client_id,last_inbound_at)
+                values(%s,%s,now())
+                on conflict(phone) do update set
+                  client_id=excluded.client_id,last_inbound_at=now(),updated_at=now()
+            """, (phone, client_id))
+
+    async def oracle_turn_result(self, phone: str, message_id: str) -> Optional[dict]:
+        async with await self.connect() as conn:
+            row = await (await conn.execute("""
+                select validation from whatsapp_bot.gustavo_v2_turns
+                where phone=%s and validation->>'oracle_message_id'=%s and status='ok'
+                order by created_at desc limit 1
+            """, (phone, message_id))).fetchone()
+            return dict(row["validation"].get("oracle_result") or {}) if row else None
+
+    async def finish_oracle_turn(self, phone: str, message_id: str, inbound: str, reply: str,
+                                 model: str, latency_ms: int, before: dict, after: dict,
+                                 result: dict, validation: dict):
+        audit = {**validation, "oracle_message_id": message_id, "oracle_result": result}
+        async with await self.connect() as conn:
+            async with conn.transaction():
+                await conn.execute("""
+                    update whatsapp_bot.gustavo_v2_contacts
+                       set state=%s::jsonb,status=%s,last_error=null,updated_at=now()
+                     where phone=%s
+                """, (json.dumps(after), "human" if after.get("stage") == "human" else "active", phone))
+                await conn.execute("""
+                    insert into whatsapp_bot.gustavo_v2_turns
+                      (phone,inbound_ids,inbound_text,response_text,model,latency_ms,state_before,state_after,validation,status,error_message)
+                    values(%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,'ok',null)
+                """, (phone, [], inbound, reply, model, latency_ms, json.dumps(before),
+                      json.dumps(after), json.dumps(audit)))
+
     async def finish_turn(self, phone: str, inbox_ids: list[int], inbound: str, reply: str, model: str,
                           latency_ms: int, before: dict, after: dict, validation: dict, error: Optional[str] = None,
                           message_specs: Optional[list[dict]] = None):

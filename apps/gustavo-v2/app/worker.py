@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import re
@@ -8,6 +10,7 @@ from .meta import MetaWhatsApp
 from .safety import (
     booking_gate,
     merge_state,
+    sanitize_ai_reply,
     validate_reply,
 )
 from .models import Decision
@@ -22,10 +25,114 @@ class Worker:
         self.meta = MetaWhatsApp(settings.meta_graph_version, settings.meta_phone_number_id, settings.meta_whatsapp_access_token)
         self.stop_event = asyncio.Event()
         self.loop_errors: dict[str, str] = {}
+        self.oracle_locks: dict[str, asyncio.Lock] = {}
 
     def permitted(self, phone: str) -> bool:
         allowed = self.settings.allowed_phones
         return self.settings.gustavo_v2_enabled and (not allowed or phone in allowed)
+
+    async def oracle_turn(self, phone: str, message_id: str, inbound: str, client_id: str,
+                          known_name: str | None = None, known_age: int | None = None,
+                          lead_source: str | None = None, service_interest: str | None = None) -> dict:
+        """Generate one idempotent Gustavo V2 decision for the local Oracle WhatsApp transport."""
+        lock = self.oracle_locks.setdefault(phone, asyncio.Lock())
+        async with lock:
+            cached = await self.db.oracle_turn_result(phone, message_id)
+            if cached:
+                return cached
+            await self.db.ensure_oracle_contact(phone, client_id)
+            before, history, stored_client_id, _ = await self.db.conversation_context(phone)
+            if known_name and not before.get("contact_name"):
+                before["contact_name"] = " ".join(known_name.split()).strip()[:80]
+            if isinstance(known_age, int) and not before.get("athlete_age"):
+                before["athlete_age"] = known_age
+            if lead_source and not before.get("lead_source"):
+                before["lead_source"] = lead_source[:120]
+            if service_interest in {"plano_carreira", "plano_internacional", "eurocamp"}:
+                before["service_interest"] = service_interest
+
+            stage = before.get("stage")
+            if stage not in {"rapport", "discovery", "fit", "guardian", "offer", "booking", "waiting_booking", "human"}:
+                stage = "discovery"
+            observed = merge_state(before, Decision(reply="Estado atualizado.", stage=stage), inbound)
+            decision, latency, generation_errors = await self.ai.decide(observed, history, inbound)
+            route_model = next((entry.split(":", 1)[1] for entry in generation_errors if entry.startswith("ai_route:")),
+                               self.settings.gemini_model)
+            after = merge_state(observed, decision, inbound)
+            if not before.get("company_intro_sent"):
+                after["company_intro_sent"] = True
+
+            reply = sanitize_ai_reply(decision.reply.strip(), after)
+            audio_key = decision.audio_key
+            age = after.get("athlete_age")
+            expected_audio = None
+            if isinstance(age, int) and 9 <= age <= 13:
+                expected_audio = "eric_8_13"
+            elif isinstance(age, int) and 14 <= age <= 18:
+                expected_audio = "eric_14_18"
+            elif isinstance(age, int) and 20 <= age <= 25:
+                expected_audio = "eric_20_25"
+            if audio_key in set(after.get("audio_sent") or []):
+                audio_key = None
+            elif audio_key and expected_audio:
+                audio_key = expected_audio
+            elif audio_key:
+                audio_key = None
+
+            explicit_booking_request = bool(re.search(
+                r"\b(?:quero|vamos|pode|podemos|gostaria)\b.*\b(?:agendar|marcar|reuni[aã]o)\b|"
+                r"\b(?:manda|envia|reenvia|cad[eê]|onde|qual)\b.*\blink\b|"
+                r"\blink\b.*\b(?:manda|envia|reenvia|cad[eê]|onde)\b",
+                inbound, re.I,
+            ))
+            booking_requested = bool(
+                decision.booking_ready
+                or (after.get("meeting_interest") and not before.get("meeting_interest"))
+                or (before.get("booking_url") and explicit_booking_request)
+            )
+            if before.get("booking_url") and not explicit_booking_request:
+                booking_requested = False
+            booking_allowed, gate_reason = booking_gate(after, booking_requested)
+            booking_url = after.get("booking_url")
+            if booking_allowed and (stored_client_id or client_id):
+                service = after.get("service_interest")
+                if service not in {"plano_carreira", "plano_internacional", "eurocamp"}:
+                    service = "plano_carreira"
+                role = "responsavel" if int(after.get("athlete_age") or 99) < 18 else (
+                    "responsavel" if after.get("contact_role") == "responsavel" else "atleta"
+                )
+                if not booking_url:
+                    booking_url = await self.db.create_booking_url(
+                        stored_client_id or client_id, service, after["contact_name"], role,
+                    )
+                after["booking_url"] = booking_url
+                after["stage"] = "waiting_booking"
+                if booking_url not in reply:
+                    reply = f"{reply}\n\n{booking_url}"
+            elif booking_requested and gate_reason:
+                after["stage"] = "guardian" if gate_reason == "responsavel_nao_confirmado" else after.get("stage", "offer")
+            if before.get("booking_url") and not explicit_booking_request:
+                reply = reply.replace(str(before["booking_url"]), "o link que já enviei")
+                reply = re.sub(r"https://ec10talentos\.com/agendar\S+", "o link que já enviei", reply)
+            if audio_key:
+                after.setdefault("audio_sent", []).append(audio_key)
+
+            errors = validate_reply(reply, after)
+            if "conteudo_tecnico_visivel" in errors:
+                raise RuntimeError("resposta_da_ia_rejeitada:" + ",".join(errors))
+            result = {
+                "reply": reply,
+                "audio_key": audio_key,
+                "booking_url": booking_url,
+                "athlete_age": after.get("athlete_age"),
+                "stage": after.get("stage"),
+                "model": route_model,
+            }
+            await self.db.finish_oracle_turn(
+                phone, message_id, inbound, reply, route_model, latency, before, after, result,
+                {"errors": errors + generation_errors, "booking_gate": gate_reason},
+            )
+            return result
 
     async def ingest_once(self):
         event = await self.db.claim_event()

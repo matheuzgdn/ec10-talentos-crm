@@ -76,6 +76,8 @@ const schema = z.object({
   GEMINI_MODEL: z.string().default("gemini-2.5-flash-lite"),
   GEMINI_AUDIO_MODEL: z.string().default("gemini-2.5-flash-lite"),
   GEMINI_MAX_AUDIO_BYTES: z.coerce.number().default(8_000_000),
+  GUSTAVO_V2_ORACLE_URL: z.string().url().optional(),
+  GUSTAVO_V2_ORACLE_TIMEOUT_MS: z.coerce.number().int().min(1000).max(30000).default(12000),
   EC10_GOOGLE_MEET_URL: z.string().optional(),
   EC10_SELLER_NAME: z.string().default("Igor Jardins"),
   EC10_SELLER_PHONE: z.string().default("+55 31 8233-1411"),

@@ -1,6 +1,7 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import http from "node:http";
+import {createHash} from "node:crypto";
 import {AsyncLocalStorage} from 'node:async_hooks';
 import QRCode from "qrcode";
 import qrcode from "qrcode-terminal";
@@ -4625,12 +4626,90 @@ async function handleGustavoPrimaryRoute(
   clientState:ClientAutomationState,
   body:string|null,
   mediaType="text",
+  sourceMessageId:string|null=null,
 ) {
+  if(config.GUSTAVO_V2_ORACLE_URL&&body?.trim()) {
+    return handleGustavoV2Oracle(client,chatId,clientState,body,mediaType,sourceMessageId);
+  }
   const state=await getBotConversationState(clientState.phone);
   if(state&&['awaiting_meeting_date','awaiting_meeting_time','awaiting_booking_completion'].includes(state.stage)) {
     return handleEc10ConversationInternal(client,chatId,clientState.id,clientState.phone,body,mediaType);
   }
   return withSdrCustomerTurn(clientState.id,clientState.phone,()=>handleGustavoMandatorySequence(client,chatId,clientState,body,mediaType));
+}
+
+type GustavoV2OracleResult={
+  reply:string;
+  audio_key:"eric_8_13"|"eric_14_18"|"eric_20_25"|null;
+  booking_url:string|null;
+  athlete_age:number|null;
+  stage:string;
+  model:string;
+};
+
+async function requestGustavoV2Oracle(clientState:ClientAutomationState,body:string,mediaType:string,sourceMessageId:string|null) {
+  const stableFallback=createHash("sha256")
+    .update([clientState.id,clientState.phone,mediaType,body].join("|"))
+    .digest("hex");
+  const messageId=(sourceMessageId?.trim()||`oracle:${stableFallback}`).slice(0,300);
+  let lastError:unknown;
+  for(let attempt=0;attempt<2;attempt+=1) {
+    const controller=new AbortController();
+    const timeout=setTimeout(()=>controller.abort(),config.GUSTAVO_V2_ORACLE_TIMEOUT_MS);
+    try {
+      const response=await fetch(config.GUSTAVO_V2_ORACLE_URL!,{
+        method:"POST",
+        headers:{"content-type":"application/json"},
+        body:JSON.stringify({
+          phone:clientState.phone,
+          message_id:messageId,
+          inbound:body,
+          client_id:clientState.id,
+          known_name:clientState.name,
+          known_age:clientState.athlete_age??null,
+          lead_source:clientState.traffic_source??clientState.utm_source??clientState.source,
+          service_interest:clientState.service_interest,
+        }),
+        signal:controller.signal,
+      });
+      if(!response.ok)throw new Error(`gustavo_v2_http_${response.status}`);
+      const result=await response.json() as GustavoV2OracleResult;
+      if(!result?.reply?.trim())throw new Error("gustavo_v2_empty_reply");
+      return result;
+    }catch(error){
+      lastError=error;
+      if(attempt===0)await naturalPause(250,500);
+    }finally{clearTimeout(timeout);}
+  }
+  throw lastError instanceof Error?lastError:new Error("gustavo_v2_unavailable");
+}
+
+async function handleGustavoV2Oracle(
+  client:any,chatId:string,clientState:ClientAutomationState,body:string,mediaType:string,sourceMessageId:string|null,
+) {
+  try {
+    const result=await requestGustavoV2Oracle(clientState,body,mediaType,sourceMessageId);
+    await sendBotText(client,chatId,clientState.id,result.reply,[350,750]);
+    if(result.audio_key) {
+      const audio=gustavoCareerAudios(result.athlete_age).at(-1);
+      if(audio) {
+        await naturalPause(900,1600);
+        await sendBotAudio(client,chatId,clientState.id,audio.audioPath);
+      }
+    }
+    await recordTrafficEvent({
+      clientId:clientState.id,phone:clientState.phone,eventType:"gustavo_v2_oracle_reply_sent",
+      channel:"whatsapp",platform:"gemini",serviceInterest:clientState.service_interest,
+      athleteAge:result.athlete_age,metadata:{stage:result.stage,model:result.model,audioKey:result.audio_key,bookingSent:Boolean(result.booking_url)},
+    });
+    return true;
+  } catch(error) {
+    await recordTrafficEvent({
+      clientId:clientState.id,phone:clientState.phone,eventType:"gustavo_v2_oracle_error",
+      channel:"whatsapp",platform:"gemini",metadata:{error:error instanceof Error?error.message.slice(0,120):"unknown"},
+    }).catch(()=>undefined);
+    throw error;
+  }
 }
 
 async function saveGustavoRecoveryPatch(state:BotConversationState,patch:Record<string,unknown>) {
@@ -6565,7 +6644,10 @@ async function main() {
           }
 
           if (config.BOT_AI_MODE === "primary") {
-            await handleGustavoPrimaryRoute(client,message.from,clientState,messageBody,mediaType);
+            await handleGustavoPrimaryRoute(
+              client,message.from,clientState,messageBody,mediaType,
+              repairedMessageId ?? message.id?.id ?? null,
+            );
             return;
           }
 

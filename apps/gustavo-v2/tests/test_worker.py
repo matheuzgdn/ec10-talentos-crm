@@ -74,3 +74,44 @@ async def test_style_warning_does_not_block_a_genuine_ai_response():
     assert worker.db.finish_turn.await_args.kwargs["message_specs"][0]["payload"]["text"] == "Entendi, vamos conversar sobre a carreira."
     assert worker.db.finish_turn.await_args.args[4] == "test"
     worker.db.enqueue.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_oracle_turn_uses_v2_ai_and_persists_without_meta_outbox():
+    worker = object.__new__(Worker)
+    worker.settings = Settings(database_url="postgresql://test", gemini_api_key="test", gustavo_v2_enabled=True)
+    worker.oracle_locks = {}
+    worker.db = AsyncMock()
+    worker.db.oracle_turn_result.return_value = None
+    worker.db.conversation_context.return_value = (DEFAULT_STATE.copy(), [], "test-client", [])
+    worker.ai = AsyncMock()
+    worker.ai.decide.return_value = (
+        Decision(reply="Sou o Gustavo, da EC10. Você já conhece nosso trabalho?", stage="discovery"),
+        800,
+        ["ai_route:gemini-test"],
+    )
+    result = await worker.oracle_turn(
+        "5531999990000", "wamid.oracle-1", "Boa noite", "test-client", lead_source="ec10_campaign_lp",
+    )
+    assert result["reply"].startswith("Sou o Gustavo")
+    assert result["model"] == "gemini-test"
+    worker.db.ensure_oracle_contact.assert_awaited_once()
+    worker.db.finish_oracle_turn.assert_awaited_once()
+    worker.db.enqueue.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_oracle_turn_is_idempotent_for_same_whatsapp_message():
+    worker = object.__new__(Worker)
+    worker.settings = Settings(database_url="postgresql://test", gemini_api_key="test", gustavo_v2_enabled=True)
+    worker.oracle_locks = {}
+    worker.db = AsyncMock()
+    worker.db.oracle_turn_result.return_value = {
+        "reply": "Resposta já gerada.", "audio_key": None, "booking_url": None,
+        "athlete_age": None, "stage": "discovery", "model": "gemini-test",
+    }
+    worker.ai = AsyncMock()
+    result = await worker.oracle_turn("5531999990000", "wamid.same", "Oi", "test-client")
+    assert result["reply"] == "Resposta já gerada."
+    worker.ai.decide.assert_not_awaited()
+    worker.db.ensure_oracle_contact.assert_not_awaited()
