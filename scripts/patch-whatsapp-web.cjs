@@ -28,6 +28,11 @@ const newMsgKeyCode = `        const serializedNewMsgKey =
             .require('WAWebCollections')
             .Msg.get(serializedNewMsgKey);`;
 
+const mediaPrivateIdFix = `        // EC10 WhatsApp Web 2.3000.1047775310 media compatibility.
+        // MediaData currently exposes an enumerable private id that overrides
+        // the valid MsgKey when mediaOptions is spread into the message.
+        delete message.__x_id;`;
+
 const newOpeningWait = `            if (
                 state === 'OPENING' ||
                 state === 'UNLAUNCHED' ||
@@ -62,17 +67,32 @@ let changed = false;
 
 {
   const file = readNormalized(utilsTarget);
-  if (!file.source.includes(newMsgKeyCode)) {
-    if (!file.source.includes(oldMsgKeyCode)) {
+  let utilsSource = file.source;
+  if (!utilsSource.includes(newMsgKeyCode)) {
+    if (!utilsSource.includes(oldMsgKeyCode)) {
       throw new Error("whatsapp-web.js sendMessage patch target was not found");
     }
-    writeNormalized(
-      utilsTarget,
-      file.source.replace(oldMsgKeyCode, newMsgKeyCode),
-      file.newline,
+    utilsSource = utilsSource.replace(oldMsgKeyCode, newMsgKeyCode);
+    changed = true;
+  }
+  if (!utilsSource.includes(mediaPrivateIdFix)) {
+    const mediaPrivateIdAnchor = `        };
+
+        // Bot's won't reply if canonicalUrl is set (linking)`;
+    if (!utilsSource.includes(mediaPrivateIdAnchor)) {
+      throw new Error("whatsapp-web.js media private id patch target was not found");
+    }
+    utilsSource = utilsSource.replace(
+      mediaPrivateIdAnchor,
+      `        };
+
+${mediaPrivateIdFix}
+
+        // Bot's won't reply if canonicalUrl is set (linking)`,
     );
     changed = true;
   }
+  if (utilsSource !== file.source) writeNormalized(utilsTarget, utilsSource, file.newline);
 }
 
 {

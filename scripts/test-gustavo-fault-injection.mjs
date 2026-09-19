@@ -51,6 +51,7 @@ for (const unsafe of [
 
 const indexSource = fs.readFileSync("apps/bot/src/index.ts", "utf8");
 const aiSource = fs.readFileSync("apps/bot/src/ai.ts", "utf8");
+const whatsappPatchSource = fs.readFileSync("scripts/patch-whatsapp-web.cjs", "utf8");
 const primaryRouteSource = indexSource.match(/async function handleGustavoPrimaryRoute[\s\S]*?\n}\n\nasync function saveGustavoRecoveryPatch/)?.[0] || "";
 assert.match(primaryRouteSource, /handleGustavoMandatorySequence\(/);
 assert.match(primaryRouteSource, /withSdrCustomerTurn\(/);
@@ -66,6 +67,7 @@ assert.match(indexSource, /sanitizeBotOutboundBody/);
 assert.match(indexSource, /findRecentSentAudio/);
 assert.match(indexSource, /confirmGustavoV2OracleAudioDelivery/);
 assert.match(indexSource, /gustavo_v2_audio_not_delivered/);
+assert.match(whatsappPatchSource, /delete message\.__x_id/);
 
 console.log(JSON.stringify({
   passed: positiveReplies.length + 20,
