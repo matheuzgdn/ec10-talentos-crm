@@ -198,6 +198,24 @@ def test_style_sanitizer_never_cuts_words_that_begin_like_a_greeting():
     assert sanitize_ai_reply(reply, state) == reply
 
 
+def test_style_sanitizer_removes_phatic_question_and_keeps_business_question():
+    state = {**DEFAULT_STATE, "contact_name": "Davi", "company_intro_sent": True}
+    reply = "Davi, beleza? Aqui é o Gustavo, da EC10. Você já conhece nosso trabalho?"
+    assert sanitize_ai_reply(reply, state) == "Aqui é o Gustavo, da EC10. Você já conhece nosso trabalho?"
+
+
+def test_style_sanitizer_turns_combined_name_and_age_into_one_next_fact():
+    state = {**DEFAULT_STATE, "contact_name": "Davi", "company_intro_sent": True}
+    reply = "Excelente objetivo, Davi. Qual é o nome do atleta e quantos anos ele tem?"
+    assert sanitize_ai_reply(reply, state) == "Excelente objetivo, Davi. Qual é o nome do atleta?"
+
+
+def test_style_sanitizer_asks_age_when_athlete_name_is_already_known():
+    state = {**DEFAULT_STATE, "contact_name": "Davi", "athlete_name": "Juca", "company_intro_sent": True}
+    reply = "Qual é o nome do atleta e quantos anos ele tem?"
+    assert sanitize_ai_reply(reply, state) == "Quantos anos o atleta tem?"
+
+
 def test_style_sanitizer_removes_repeated_greeting_after_intro():
     state = {**DEFAULT_STATE, "contact_name": "Sandra", "company_intro_sent": True}
     assert sanitize_ai_reply("Oi, Sandra! Vamos continuar do ponto em que paramos.", state) == (

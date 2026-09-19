@@ -245,6 +245,40 @@ def sanitize_ai_reply(reply: str, state: dict) -> str:
             count=1,
             flags=re.I,
         ).strip()
+    # Keep conversational greetings from consuming the single question that
+    # must move the sale forward (for example: "Davi, beleza? ... conhece?").
+    if text.count("?") > 1:
+        phatic_name = rf"(?:{name}\s*[,!.]?\s*)?" if name else ""
+        text = re.sub(
+            rf"^{phatic_name}(?:beleza|tudo bem|como vai)\s*\?\s*",
+            "",
+            text,
+            count=1,
+            flags=re.I,
+        ).strip()
+    # "Qual é o nome ... e quantos anos?" has one question mark but asks for
+    # two facts. Ask only the first missing fact and preserve prior context.
+    lower = text.lower()
+    asks_name = re.search(
+        r"\b(?:qual(?:\s+é|\s+e)?\s+(?:o\s+)?nome|como\s+(?:ele|ela|o\s+atleta|a\s+atleta)\s+se\s+chama)\b",
+        lower,
+    )
+    asks_age = re.search(r"\b(?:quantos\s+anos|qual(?:\s+é|\s+e)?\s+a\s+idade)\b", lower)
+    if asks_name and asks_age:
+        question_start = max(
+            text.rfind(".", 0, min(asks_name.start(), asks_age.start())),
+            text.rfind("!", 0, min(asks_name.start(), asks_age.start())),
+            text.rfind("?", 0, min(asks_name.start(), asks_age.start())),
+        ) + 1
+        context = text[:question_start].strip()
+        next_question = (
+            "Qual é o nome do atleta?"
+            if not state.get("athlete_name")
+            else "Quantos anos o atleta tem?"
+        )
+        text = f"{context} {next_question}".strip()
+    if text.count("?") > 1:
+        text = text[: text.find("?") + 1].strip()
     if text:
         return text[0].upper() + text[1:]
     return reply.strip()
