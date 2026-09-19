@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from typing import Optional
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 from .config import get_settings
@@ -30,10 +31,10 @@ class OracleTurnRequest(BaseModel):
     message_id: str = Field(min_length=3, max_length=300)
     inbound: str = Field(min_length=1, max_length=5000)
     client_id: str = Field(min_length=8, max_length=100)
-    known_name: str | None = Field(default=None, max_length=100)
-    known_age: int | None = Field(default=None, ge=6, le=40)
-    lead_source: str | None = Field(default=None, max_length=120)
-    service_interest: str | None = Field(default=None, max_length=80)
+    known_name: Optional[str] = Field(default=None, max_length=100)
+    known_age: Optional[int] = Field(default=None, ge=6, le=40)
+    lead_source: Optional[str] = Field(default=None, max_length=120)
+    service_interest: Optional[str] = Field(default=None, max_length=80)
 
 
 @app.get("/health")
