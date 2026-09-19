@@ -24,6 +24,11 @@ def test_reply_has_only_one_question():
     assert "mais_de_uma_pergunta" in validate_reply("Qual a idade? Ele joga em clube?", DEFAULT_STATE)
 
 
+def test_single_question_mark_cannot_hide_name_and_age_as_two_questions():
+    reply = "Qual é o nome do seu atleta e quantos anos ele tem?"
+    assert "mais_de_uma_pergunta" in validate_reply(reply, DEFAULT_STATE)
+
+
 def test_reply_stays_short():
     assert "mensagem_longa" in validate_reply("A" * 481, DEFAULT_STATE)
 

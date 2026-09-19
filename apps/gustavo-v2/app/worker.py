@@ -114,9 +114,6 @@ class Worker:
             if before.get("booking_url") and not explicit_booking_request:
                 reply = reply.replace(str(before["booking_url"]), "o link que já enviei")
                 reply = re.sub(r"https://ec10talentos\.com/agendar\S+", "o link que já enviei", reply)
-            if audio_key:
-                after.setdefault("audio_sent", []).append(audio_key)
-
             errors = validate_reply(reply, after)
             if "conteudo_tecnico_visivel" in errors:
                 raise RuntimeError("resposta_da_ia_rejeitada:" + ",".join(errors))
@@ -133,6 +130,12 @@ class Worker:
                 {"errors": errors + generation_errors, "booking_gate": gate_reason},
             )
             return result
+
+    async def confirm_oracle_audio_delivery(self, phone: str, audio_key: str) -> dict:
+        confirmed = await self.db.confirm_audio_delivery(phone, audio_key)
+        if not confirmed:
+            raise RuntimeError("audio_delivery_contact_not_found")
+        return {"ok": True, "audio_key": audio_key}
 
     async def ingest_once(self):
         event = await self.db.claim_event()

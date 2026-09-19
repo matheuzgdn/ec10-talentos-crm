@@ -63,6 +63,9 @@ assert.doesNotMatch(indexSource, /:sdr_turn:\$\{sdrTurn\.turn\}/);
 assert.match(indexSource, /stage:\s*"awaiting_booking_completion"/);
 assert.match(indexSource, /guardianIdentityPreviouslyContradicted/);
 assert.match(indexSource, /sanitizeBotOutboundBody/);
+assert.match(indexSource, /findRecentSentAudio/);
+assert.match(indexSource, /confirmGustavoV2OracleAudioDelivery/);
+assert.match(indexSource, /gustavo_v2_audio_not_delivered/);
 
 console.log(JSON.stringify({
   passed: positiveReplies.length + 20,

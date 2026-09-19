@@ -208,6 +208,29 @@ class Database:
                   client_id=excluded.client_id,last_inbound_at=now(),updated_at=now()
             """, (phone, client_id))
 
+    async def confirm_audio_delivery(self, phone: str, audio_key: str) -> bool:
+        """Persist audio memory only after the active transport confirms sending it."""
+        if audio_key not in {"eric_8_13", "eric_14_18", "eric_20_25"}:
+            return False
+        async with await self.connect() as conn:
+            async with conn.transaction():
+                row = await (await conn.execute(
+                    "select state from whatsapp_bot.gustavo_v2_contacts where phone=%s for update",
+                    (phone,),
+                )).fetchone()
+                if not row:
+                    return False
+                state = {**deepcopy(DEFAULT_STATE), **(row["state"] or {})}
+                delivered = list(state.get("audio_sent") or [])
+                if audio_key not in delivered:
+                    delivered.append(audio_key)
+                    state["audio_sent"] = delivered
+                    await conn.execute(
+                        "update whatsapp_bot.gustavo_v2_contacts set state=%s::jsonb,updated_at=now() where phone=%s",
+                        (json.dumps(state), phone),
+                    )
+                return True
+
     async def oracle_turn_result(self, phone: str, message_id: str) -> Optional[dict]:
         async with await self.connect() as conn:
             row = await (await conn.execute("""

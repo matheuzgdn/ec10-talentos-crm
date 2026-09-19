@@ -288,6 +288,7 @@ function isRecoverableWhatsAppExecutionError(error: unknown) {
     message.includes("cannot find context with specified id") ||
     message.includes("runtime.callfunctionon") ||
     message.includes("runtime.evaluate") ||
+    message.includes("data passed to getter must include an id property") ||
     message.includes("target closed") ||
     message.includes("session closed") ||
     message.includes("connection closed")
@@ -616,6 +617,21 @@ async function findRecentSentText(client: any, chatId: string, body: string) {
     && Number(message?.timestamp ?? 0) >= minimumTimestamp
     && normalizedMessageBody(message?.body) === expected
   )) ?? null;
+}
+
+async function findRecentSentAudio(client: any, chatId: string) {
+  await wait(1200);
+  const chat = await client.getChatById(chatId).catch(() => null);
+  if (!chat || typeof chat.fetchMessages !== "function") return null;
+
+  const messages = await chat.fetchMessages({ limit: 20 }).catch(() => []);
+  const minimumTimestamp = Math.floor(Date.now() / 1000) - 90;
+  return messages.find((message: any) => {
+    const type = String(message?.type ?? "").toLowerCase();
+    return message?.fromMe === true
+      && Number(message?.timestamp ?? 0) >= minimumTimestamp
+      && (type === "ptt" || type === "audio" || type === "voice");
+  }) ?? null;
 }
 
 async function sendTextWithConversationConfirmation(client: any, chatId: string, body: string) {
@@ -2207,14 +2223,37 @@ async function sendBotAudio(client: any, chatId: string, clientId: string, audio
       mediaPath: audioPath,
       windowMinutes: 24 * 60
     })) {
-      return false;
+      return true;
     }
     await sendTypingPause(client, chatId, 900, 1800);
     const resolvedAudioPath = resolveProjectPath(audioPath);
-    const media = MessageMedia.fromFilePath(resolvedAudioPath);
-    const sent = await sendWhatsAppWithRetry(() => client.sendMessage(chatId, media, {
-      sendAudioAsVoice: true
-    }));
+    let sent: any;
+    try {
+      const voiceMedia = MessageMedia.fromFilePath(resolvedAudioPath);
+      sent = await sendWhatsAppWithRetry(() => client.sendMessage(chatId, voiceMedia, {
+        sendAudioAsVoice: true,
+        waitUntilMsgSent: true
+      }));
+    } catch (voiceError) {
+      const confirmationClient = activeWhatsAppClient ?? client;
+      sent = await findRecentSentAudio(confirmationClient, chatId).catch(() => null);
+      if (!sent) {
+        try {
+          const regularAudio = MessageMedia.fromFilePath(resolvedAudioPath);
+          sent = await sendWhatsAppWithRetry(() => confirmationClient.sendMessage(chatId, regularAudio, {
+            waitUntilMsgSent: true
+          }));
+        } catch (regularError) {
+          sent = await findRecentSentAudio(activeWhatsAppClient ?? client, chatId).catch(() => null);
+          if (!sent) {
+            throw new Error(
+              `Falha no áudio como voz (${getErrorMessage(voiceError)}) e como arquivo (${getErrorMessage(regularError)}).`
+            );
+          }
+        }
+      }
+    }
+    if (!sent) throw new Error("WhatsApp não confirmou o envio do áudio.");
     await recordOutboundChatMessage({
       clientId,
       body: null,
@@ -4740,6 +4779,25 @@ async function requestGustavoV2Oracle(clientState:ClientAutomationState,body:str
   throw lastError instanceof Error?lastError:new Error("gustavo_v2_unavailable");
 }
 
+async function confirmGustavoV2OracleAudioDelivery(
+  phone:string,audioKey:NonNullable<GustavoV2OracleResult["audio_key"]>,
+) {
+  const endpoint=new URL(config.GUSTAVO_V2_ORACLE_URL!);
+  endpoint.pathname="/oracle/audio-delivered";
+  endpoint.search="";
+  const controller=new AbortController();
+  const timeout=setTimeout(()=>controller.abort(),config.GUSTAVO_V2_ORACLE_TIMEOUT_MS);
+  try {
+    const response=await fetch(endpoint,{
+      method:"POST",
+      headers:{"content-type":"application/json"},
+      body:JSON.stringify({phone,audio_key:audioKey}),
+      signal:controller.signal,
+    });
+    if(!response.ok)throw new Error(`gustavo_v2_audio_confirmation_http_${response.status}`);
+  } finally {clearTimeout(timeout);}
+}
+
 async function handleGustavoV2Oracle(
   client:any,chatId:string,clientState:ClientAutomationState,body:string,mediaType:string,sourceMessageId:string|null,
 ) {
@@ -4750,7 +4808,9 @@ async function handleGustavoV2Oracle(
       const audio=gustavoCareerAudios(result.athlete_age).at(-1);
       if(audio) {
         await naturalPause(900,1600);
-        await sendBotAudio(client,chatId,clientState.id,audio.audioPath);
+        const audioSent=await sendBotAudio(client,chatId,clientState.id,audio.audioPath);
+        if(!audioSent)throw new Error("gustavo_v2_audio_not_delivered");
+        await confirmGustavoV2OracleAudioDelivery(clientState.phone,result.audio_key);
       }
     }
     await recordTrafficEvent({

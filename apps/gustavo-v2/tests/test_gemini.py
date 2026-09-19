@@ -60,6 +60,17 @@ async def test_ai_revises_its_own_reply_without_a_canned_fallback():
 
 
 @pytest.mark.asyncio
+async def test_ai_revises_name_and_age_combined_under_one_question_mark():
+    agent, models = sequence_agent([
+        Decision(reply="Qual é o nome do atleta e quantos anos ele tem?"),
+        Decision(reply="Qual é o nome do atleta?"),
+    ])
+    decision, _, _ = await agent.decide(DEFAULT_STATE, [], "Quero desenvolver meu filho")
+    assert decision.reply == "Qual é o nome do atleta?"
+    assert len(models.calls) == 2
+
+
+@pytest.mark.asyncio
 async def test_style_imperfection_does_not_leave_the_lead_in_an_infinite_retry():
     generated = Decision(reply="Entendi, vamos conversar sobre a carreira.")
     agent, _ = sequence_agent([generated, generated])

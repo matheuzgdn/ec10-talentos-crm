@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Literal, Optional
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 from .config import get_settings
@@ -37,6 +37,11 @@ class OracleTurnRequest(BaseModel):
     service_interest: Optional[str] = Field(default=None, max_length=80)
 
 
+class OracleAudioDeliveredRequest(BaseModel):
+    phone: str = Field(min_length=8, max_length=20)
+    audio_key: Literal["eric_8_13", "eric_14_18", "eric_20_25"]
+
+
 @app.get("/health")
 async def health():
     database = await worker.db.health()
@@ -54,3 +59,8 @@ async def health():
 @app.post("/oracle/respond")
 async def oracle_respond(turn: OracleTurnRequest):
     return await worker.oracle_turn(**turn.model_dump())
+
+
+@app.post("/oracle/audio-delivered")
+async def oracle_audio_delivered(delivery: OracleAudioDeliveredRequest):
+    return await worker.confirm_oracle_audio_delivery(**delivery.model_dump())

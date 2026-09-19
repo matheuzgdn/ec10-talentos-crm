@@ -189,13 +189,20 @@ def booking_gate(state: dict, requested: bool) -> tuple[bool, Optional[str]]:
 def validate_reply(reply: str, state: dict) -> list[str]:
     errors: list[str] = []
     text = " ".join(reply.split()).strip()
+    lower = text.lower()
     if FORBIDDEN_VISIBLE.search(text):
         errors.append("conteudo_tecnico_visivel")
     if text.count("?") > 1:
         errors.append("mais_de_uma_pergunta")
+    asks_name = bool(re.search(
+        r"\b(?:qual(?:\s+é|\s+e)?\s+(?:o\s+)?nome|como\s+(?:ele|ela|o\s+atleta|a\s+atleta)\s+se\s+chama)\b",
+        lower,
+    ))
+    asks_age = bool(re.search(r"\b(?:quantos\s+anos|qual(?:\s+é|\s+e)?\s+a\s+idade)\b", lower))
+    if asks_name and asks_age and "mais_de_uma_pergunta" not in errors:
+        errors.append("mais_de_uma_pergunta")
     if len(text) > 480:
         errors.append("mensagem_longa")
-    lower = text.lower()
     if state.get("athlete_age") and re.search(r"\b(qual|quantos).*\bidade|quantos anos", lower):
         errors.append("repete_idade")
     if state.get("contact_name") and re.search(r"qual (?:é|e) (?:o )?seu nome|como (?:você|voce) se chama", lower):

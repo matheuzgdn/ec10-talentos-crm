@@ -115,3 +115,31 @@ async def test_oracle_turn_is_idempotent_for_same_whatsapp_message():
     assert result["reply"] == "Resposta já gerada."
     worker.ai.decide.assert_not_awaited()
     worker.db.ensure_oracle_contact.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_oracle_audio_is_remembered_only_after_transport_confirmation():
+    worker = object.__new__(Worker)
+    worker.settings = Settings(database_url="postgresql://test", gemini_api_key="test", gustavo_v2_enabled=True)
+    worker.oracle_locks = {}
+    worker.db = AsyncMock()
+    state = {**DEFAULT_STATE, "contact_name": "Davi", "contact_role": "responsavel",
+             "guardian_confirmed": True, "athlete_name": "Juca", "athlete_age": 14,
+             "service_interest": "plano_carreira", "company_intro_sent": True}
+    worker.db.oracle_turn_result.return_value = None
+    worker.db.conversation_context.return_value = (state, [], "test-client", [])
+    worker.ai = AsyncMock()
+    worker.ai.decide.return_value = (
+        Decision(reply="Vou te enviar agora o áudio do Eric.", stage="offer", audio_key="eric_14_18"),
+        800,
+        ["ai_route:gemini-test"],
+    )
+    result = await worker.oracle_turn("5592999990000", "wamid.audio", "Meu filho tem 14 anos", "test-client")
+    saved_state = worker.db.finish_oracle_turn.await_args.args[7]
+    assert result["audio_key"] == "eric_14_18"
+    assert saved_state["audio_sent"] == []
+
+    worker.db.confirm_audio_delivery.return_value = True
+    confirmed = await worker.confirm_oracle_audio_delivery("5592999990000", "eric_14_18")
+    assert confirmed == {"ok": True, "audio_key": "eric_14_18"}
+    worker.db.confirm_audio_delivery.assert_awaited_once_with("5592999990000", "eric_14_18")
