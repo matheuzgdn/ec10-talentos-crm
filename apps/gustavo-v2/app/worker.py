@@ -78,6 +78,24 @@ class Worker:
                 audio_key = expected_audio
             elif audio_key:
                 audio_key = None
+            audio_required = bool(
+                expected_audio
+                and expected_audio not in set(after.get("audio_sent") or [])
+                and after.get("service_interest") == "plano_carreira"
+                and after.get("contact_name")
+                and after.get("athlete_name")
+                and (
+                    not isinstance(age, int)
+                    or age >= 18
+                    or (after.get("contact_role") == "responsavel" and after.get("guardian_confirmed"))
+                )
+            )
+            if audio_required and not audio_key:
+                audio_key = expected_audio
+                reply = (
+                    "Antes da agenda, vou te enviar agora o áudio do Eric Cena "
+                    "explicando o Plano de Carreira para essa fase."
+                )
 
             explicit_booking_request = bool(re.search(
                 r"\b(?:quero|vamos|pode|podemos|gostaria)\b.*\b(?:agendar|marcar|reuni[aã]o)\b|"
@@ -90,6 +108,8 @@ class Worker:
                 or (after.get("meeting_interest") and not before.get("meeting_interest"))
                 or (before.get("booking_url") and explicit_booking_request)
             )
+            if audio_required:
+                booking_requested = False
             if before.get("booking_url") and not explicit_booking_request:
                 booking_requested = False
             booking_allowed, gate_reason = booking_gate(after, booking_requested)

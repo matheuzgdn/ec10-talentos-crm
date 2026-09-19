@@ -143,3 +143,27 @@ async def test_oracle_audio_is_remembered_only_after_transport_confirmation():
     confirmed = await worker.confirm_oracle_audio_delivery("5592999990000", "eric_14_18")
     assert confirmed == {"ok": True, "audio_key": "eric_14_18"}
     worker.db.confirm_audio_delivery.assert_awaited_once_with("5592999990000", "eric_14_18")
+
+
+@pytest.mark.asyncio
+async def test_oracle_never_opens_booking_before_required_audio_is_delivered():
+    worker = object.__new__(Worker)
+    worker.settings = Settings(database_url="postgresql://test", gemini_api_key="test", gustavo_v2_enabled=True)
+    worker.oracle_locks = {}
+    worker.db = AsyncMock()
+    state = {**DEFAULT_STATE, "contact_name": "Davi", "contact_role": "responsavel",
+             "guardian_confirmed": True, "athlete_name": "Juca", "athlete_age": 14,
+             "service_interest": "plano_carreira", "company_intro_sent": True}
+    worker.db.oracle_turn_result.return_value = None
+    worker.db.conversation_context.return_value = (state, [], "test-client", [])
+    worker.ai = AsyncMock()
+    worker.ai.decide.return_value = (
+        Decision(reply="Vou abrir a agenda agora.", stage="booking", booking_ready=True),
+        800,
+        ["ai_route:gemini-test"],
+    )
+    result = await worker.oracle_turn("5592999990000", "wamid.booking-before-audio", "Sim, quero marcar", "test-client")
+    assert result["audio_key"] == "eric_14_18"
+    assert result["booking_url"] is None
+    assert "áudio do Eric Cena" in result["reply"]
+    worker.db.create_booking_url.assert_not_awaited()
