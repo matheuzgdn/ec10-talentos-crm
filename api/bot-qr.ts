@@ -1,4 +1,5 @@
 import { pool } from "./_db.js";
+import { bookingPool } from "./_booking-db.js";
 
 const oracleBaseUrl = process.env.BOT_ORACLE_BASE_URL ?? "http://147.15.27.235:3001";
 const qrStaleAfterMs = Number(process.env.BOT_QR_STALE_SECONDS ?? 600) * 1000;
@@ -51,24 +52,32 @@ async function fetchRuntimeStatus(instanceId: string) {
 }
 
 async function fetchRuntimeQr(instanceId: string) {
-  if (!process.env.SUPABASE_DB_URL) return null;
-
   try {
-    const { rows } = await pool.query(
-      "select payload, updated_at from public.bot_runtime where key = $1 limit 1",
+    const { rows } = await bookingPool.query(
+      "select payload, updated_at from whatsapp_bot.bot_runtime where key = $1 limit 1",
       [runtimeKey("whatsapp_qr", instanceId)]
     );
-    const row = rows[0];
-    if (!isFresh(row?.payload?.updatedAt ?? row?.updated_at)) return null;
-
-    const qrDataUrl = row?.payload?.qrDataUrl;
-    if (typeof qrDataUrl !== "string") return null;
-
-    const match = qrDataUrl.match(/^data:image\/png;base64,(.+)$/);
-    return match ? Buffer.from(match[1], "base64") : null;
+    return decodeRuntimeQr(rows[0]);
   } catch {
-    return null;
+    if (!process.env.SUPABASE_DB_URL) return null;
+    try {
+      const { rows } = await pool.query(
+        "select payload, updated_at from public.bot_runtime where key = $1 limit 1",
+        [runtimeKey("whatsapp_qr", instanceId)]
+      );
+      return decodeRuntimeQr(rows[0]);
+    } catch {
+      return null;
+    }
   }
+}
+
+function decodeRuntimeQr(row: any) {
+  if (!isFresh(row?.payload?.updatedAt ?? row?.updated_at)) return null;
+  const qrDataUrl = row?.payload?.qrDataUrl;
+  if (typeof qrDataUrl !== "string") return null;
+  const match = qrDataUrl.match(/^data:image\/png;base64,(.+)$/);
+  return match ? Buffer.from(match[1], "base64") : null;
 }
 
 export default async function handler(request: any, response: any) {
