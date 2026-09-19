@@ -131,6 +131,7 @@ import {
   scheduleOutboundAudioMessage,
   saveBotConversationState,
   scheduleOutboundPollMessage,
+  scheduleOutboundRecoveryTextMessage,
   scheduleOutboundTextMessage,
   shouldSendRuleResponse,
   tryAcquireBotDedupeLock,
@@ -273,8 +274,23 @@ function isPuppeteerTargetClosedError(error: unknown) {
   return (
     message.includes("Target closed") ||
     message.includes("Protocol error (Runtime.evaluate)") ||
+    message.includes("Protocol error (Runtime.callFunctionOn)") ||
+    message.includes("Execution context was destroyed") ||
     message.includes("Session closed") ||
     message.includes("Connection closed")
+  );
+}
+
+function isRecoverableWhatsAppExecutionError(error: unknown) {
+  const message = getErrorMessage(error).toLowerCase();
+  return (
+    message.includes("execution context was destroyed") ||
+    message.includes("cannot find context with specified id") ||
+    message.includes("runtime.callfunctionon") ||
+    message.includes("runtime.evaluate") ||
+    message.includes("target closed") ||
+    message.includes("session closed") ||
+    message.includes("connection closed")
   );
 }
 
@@ -2058,7 +2074,47 @@ async function sendBotText(client: any, chatId: string, clientId: string, body: 
     }
     if (!(await shouldSendBotOutbound({ clientId, body, mediaType: "text" }))) return false;
     await sendTypingPause(client, chatId, delayRange?.[0] ?? 1800, delayRange?.[1] ?? 3600);
-    const sent = await sendWhatsAppWithRetry(() => client.sendMessage(chatId, body));
+    let sent: any;
+    try {
+      sent = await sendTextWithConversationConfirmation(client, chatId, body);
+    } catch (error) {
+      if (!isRecoverableWhatsAppExecutionError(error)) throw error;
+
+      const firstConfirmationClient = activeWhatsAppClient ?? client;
+      const firstConfirmation = await findRecentSentText(firstConfirmationClient, chatId, body).catch(() => null);
+      if (firstConfirmation) {
+        sent = firstConfirmation;
+      } else {
+        await wait(1800);
+        const retryClient = activeWhatsAppClient ?? client;
+        const secondConfirmation = await findRecentSentText(retryClient, chatId, body).catch(() => null);
+        if (secondConfirmation) {
+          sent = secondConfirmation;
+        } else {
+          try {
+            sent = await sendTextWithConversationConfirmation(retryClient, chatId, body);
+          } catch (retryError) {
+            const stored = await getClientAutomationStateById(clientId);
+            await scheduleOutboundRecoveryTextMessage({
+              clientId,
+              phone: stored?.phone ?? chatId,
+              body,
+              scheduledAt: new Date(Date.now() + 3000).toISOString(),
+              errorMessage: `Recuperacao automatica apos falha do WhatsApp Web: ${getErrorMessage(retryError)}`
+            });
+            await recordTrafficEvent({
+              clientId,
+              phone: stored?.phone ?? chatId,
+              eventType: "whatsapp_immediate_recovery_queued",
+              channel: "whatsapp",
+              platform: "whatsapp",
+              metadata: { firstError: getErrorMessage(error), retryError: getErrorMessage(retryError) }
+            });
+            return true;
+          }
+        }
+      }
+    }
     await recordOutboundChatMessage({
       clientId,
       body,

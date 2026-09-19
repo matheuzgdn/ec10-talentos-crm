@@ -1527,6 +1527,70 @@ export async function scheduleOutboundTextMessage(input: {
   if (error) throw error;
 }
 
+export async function scheduleOutboundRecoveryTextMessage(input: {
+  clientId: string;
+  phone: string;
+  body: string;
+  scheduledAt: string;
+  errorMessage: string;
+  botInstanceId?: string;
+}) {
+  const supabase = getSupabase();
+  const database = getDatabase();
+  if (!supabase && !database) return;
+  const botInstanceId = input.botInstanceId ?? currentBotInstanceId();
+  const errorMessage = input.errorMessage.slice(0, 1000);
+
+  if (database) {
+    await database.query(
+      `
+        insert into public.outbound_messages
+          (client_id, bot_instance_id, phone, body, media_type, status, scheduled_at,
+           error_message, whatsapp_send_attempts)
+        select $1, $6, $2, $3, 'text', 'queued', $4::timestamptz, $5, 1
+        where not exists (
+          select 1
+          from public.outbound_messages
+          where client_id = $1
+            and bot_instance_id = $6
+            and phone = $2
+            and body = $3
+            and status in ('queued', 'sent')
+        )
+      `,
+      [input.clientId, input.phone, input.body, input.scheduledAt, errorMessage, botInstanceId]
+    );
+    return;
+  }
+
+  if (!supabase) return;
+  const { data: existing, error: readError } = await supabase
+    .from("outbound_messages")
+    .select("id")
+    .eq("client_id", input.clientId)
+    .eq("bot_instance_id", botInstanceId)
+    .eq("phone", input.phone)
+    .eq("body", input.body)
+    .in("status", ["queued", "sent"])
+    .limit(1);
+  if (readError) throw readError;
+  if (existing?.length) return;
+
+  const { error } = await supabase.from("outbound_messages").insert({
+    client_id: input.clientId,
+    bot_instance_id: botInstanceId,
+    phone: input.phone,
+    body: input.body,
+    media_type: "text",
+    media_path: null,
+    status: "queued",
+    scheduled_at: input.scheduledAt,
+    error_message: errorMessage,
+    whatsapp_send_attempts: 1
+  });
+  if (error) throw error;
+}
+
 export async function scheduleOutboundPollMessage(input: {
   clientId: string;
   phone: string;
