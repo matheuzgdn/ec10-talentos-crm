@@ -53,6 +53,13 @@ with psycopg.connect(database_url, row_factory=dict_row) as connection:
         where client_id=any(%s) and created_at>=%s and status in ('queued','sending','sent')
         group by client_id,coalesce(body,''),coalesce(media_path,'') having count(*)>1
     """, (ids, RECOVERY_STARTED_AT)).fetchall()
+    transport_gaps = connection.execute("""
+        select client_id,media_type,status
+        from whatsapp_bot.outbound_messages
+        where client_id=any(%s) and created_at>=%s and status='sent'
+          and whatsapp_message_id is null
+        order by created_at
+    """, (ids, RECOVERY_STARTED_AT)).fetchall()
     per_contact = connection.execute("""
         select c.id,
           count(o.*) filter (where o.status='queued')::int queued,
@@ -83,13 +90,18 @@ safe_duplicates = [
     {"contact_key": contact_key(row["client_id"]), "total": row["total"]}
     for row in duplicates
 ]
+safe_transport_gaps = [
+    {"contact_key": contact_key(row["client_id"]), "media_type": row["media_type"]}
+    for row in transport_gaps
+]
 report = {
-    "ok": not failures and not duplicates,
+    "ok": not failures and not duplicates and not transport_gaps,
     "generated_at": datetime.now(timezone.utc).isoformat(),
     "recovered_contacts": len(ids),
     "queue_summary": queue_summary,
     "failures": safe_failures,
     "duplicates": safe_duplicates,
+    "transport_gaps": safe_transport_gaps,
     "contacts": safe_contacts,
 }
 print(json.dumps(report, ensure_ascii=False, default=str))
