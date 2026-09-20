@@ -4737,6 +4737,8 @@ type GustavoV2OracleResult={
   reply:string;
   audio_key:"eric_8_13"|"eric_14_18"|"eric_20_25"|null;
   booking_url:string|null;
+  poll:{kind:"meeting_day"|"meeting_time";question:string;options:string[]}|null;
+  booking:{id:string;starts_at:string;seller_name:string}|null;
   athlete_age:number|null;
   stage:string;
   model:string;
@@ -4813,10 +4815,33 @@ async function handleGustavoV2Oracle(
         await confirmGustavoV2OracleAudioDelivery(clientState.phone,result.audio_key);
       }
     }
+    if(result.poll?.question&&Array.isArray(result.poll.options)&&result.poll.options.length>=2) {
+      await naturalPause(450,850);
+      const pollSent=await sendBotPoll({
+        client,chatId,clientId:clientState.id,question:result.poll.question,
+        options:result.poll.options,delayRange:[250,550],
+      });
+      if(!pollSent)throw new Error("gustavo_v2_booking_poll_not_delivered");
+    }
+    if(result.booking) {
+      await recordTrafficEvent({
+        clientId:clientState.id,phone:clientState.phone,eventType:"bot_meeting_scheduled",
+        channel:"whatsapp",platform:"gustavo_v2",serviceInterest:"plano_carreira",
+        athleteAge:result.athlete_age,metadata:{bookingId:result.booking.id,
+          startsAt:result.booking.starts_at,sellerName:result.booking.seller_name,source:"gustavo_chat"},
+      });
+      await recordTrafficEvent({
+        clientId:clientState.id,phone:clientState.phone,eventType:"Schedule",
+        channel:"whatsapp",platform:"gustavo_v2",serviceInterest:"plano_carreira",
+        athleteAge:result.athlete_age,metadata:{bookingId:result.booking.id,
+          startsAt:result.booking.starts_at,sellerName:result.booking.seller_name,source:"gustavo_chat"},
+      });
+    }
     await recordTrafficEvent({
       clientId:clientState.id,phone:clientState.phone,eventType:"gustavo_v2_oracle_reply_sent",
       channel:"whatsapp",platform:"gemini",serviceInterest:clientState.service_interest,
-      athleteAge:result.athlete_age,metadata:{stage:result.stage,model:result.model,audioKey:result.audio_key,bookingSent:Boolean(result.booking_url)},
+      athleteAge:result.athlete_age,metadata:{stage:result.stage,model:result.model,audioKey:result.audio_key,
+        bookingSent:Boolean(result.booking),pollKind:result.poll?.kind??null},
     });
     return true;
   } catch(error) {

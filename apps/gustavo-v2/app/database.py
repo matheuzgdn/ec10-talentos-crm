@@ -5,8 +5,10 @@ import json
 import secrets
 import time
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+from urllib.parse import urlencode
+from zoneinfo import ZoneInfo
 import psycopg
 from psycopg.rows import dict_row
 from .models import DEFAULT_STATE
@@ -314,6 +316,155 @@ class Database:
                 values(%s,%s,%s,%s,%s)
             """, (digest, client_id, service, name, role))
         return f"https://ec10talentos.com/agendar?servico={service}&cadastro={token}"
+
+    async def list_chat_booking_days(self, service: str = "plano_carreira",
+                                     after: Optional[datetime] = None) -> list[dict]:
+        """Return only real, conflict-free occurrences from the approved commercial rota."""
+        async with await self.connect() as conn:
+            rows = await (await conn.execute(
+                "select * from whatsapp_bot.ec10_chat_booking_options(%s,%s)",
+                (service, after),
+            )).fetchall()
+            result: list[dict] = []
+            for row in rows:
+                item = dict(row)
+                for key in ("seller_id",):
+                    if item.get(key) is not None:
+                        item[key] = str(item[key])
+                for key in ("starts_at", "ends_at"):
+                    if isinstance(item.get(key), datetime):
+                        item[key] = item[key].isoformat()
+                result.append(item)
+            return result
+
+    async def reserve_chat_booking(self, phone: str, client_id: str, state: dict,
+                                   option: dict) -> dict:
+        """Atomically reserve the chat-selected time and mirror it to the CRM agenda."""
+        token = secrets.token_urlsafe(32)
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        service = "plano_carreira"
+        age = int(state.get("athlete_age") or 0)
+        role = "responsavel" if age < 18 or state.get("contact_role") == "responsavel" else "atleta"
+        name = " ".join(str(state.get("contact_name") or "").split()).strip()[:100]
+        seller_id = str(option.get("seller_id") or "")
+        starts_at = datetime.fromisoformat(str(option.get("starts_at") or "").replace("Z", "+00:00"))
+        if not name or not 8 <= age <= 25 or not seller_id:
+            raise ValueError("booking_identity_incomplete")
+        if age < 18 and (role != "responsavel" or not state.get("guardian_confirmed")):
+            raise ValueError("booking_guardian_required")
+
+        async with await self.connect() as conn:
+            async with conn.transaction():
+                await conn.execute("select pg_advisory_xact_lock(hashtext(%s))", (f"ec10-booking-client:{client_id}",))
+                existing = await (await conn.execute("""
+                    select b.id,b.starts_at,b.ends_at,coalesce(p.full_name,s.name) seller_name,
+                      coalesce(r.display_name,coalesce(p.full_name,s.name)) display_name
+                    from whatsapp_bot.ec10_bookings b
+                    join whatsapp_bot.sellers s on s.id=b.seller_id
+                    left join public.profiles p on p.auth_user_id=s.auth_user_id or lower(p.email)=lower(s.email)
+                    left join whatsapp_bot.ec10_chat_booking_schedule r on r.seller_id=b.seller_id
+                      and r.service=b.service and r.iso_weekday=extract(isodow from b.starts_at at time zone 'America/Sao_Paulo')
+                    where b.client_id=%s and b.status='confirmed' and b.starts_at>now()
+                    order by b.starts_at limit 1 for update of b
+                """, (client_id,))).fetchone()
+                if existing:
+                    booking = dict(existing)
+                    booking["replayed"] = True
+                else:
+                    schedule = await (await conn.execute("""
+                        select r.seller_id,r.display_name,
+                          (%s::timestamptz at time zone 'America/Sao_Paulo')::date local_date
+                        from whatsapp_bot.ec10_chat_booking_schedule r
+                        join whatsapp_bot.sellers s on s.id=r.seller_id and s.active
+                        where r.enabled and r.service=%s and r.seller_id=%s
+                          and r.iso_weekday=extract(isodow from %s::timestamptz at time zone 'America/Sao_Paulo')
+                          and r.local_time=(%s::timestamptz at time zone 'America/Sao_Paulo')::time
+                        for update of r
+                    """, (starts_at, service, seller_id, starts_at, starts_at))).fetchone()
+                    if not schedule or starts_at <= datetime.now(timezone.utc):
+                        raise ValueError("booking_option_invalid")
+                    ends_at = starts_at + timedelta(hours=1)
+                    await conn.execute("select pg_advisory_xact_lock(hashtext(%s))", (seller_id,))
+                    conflicts = await (await conn.execute("""
+                        select whatsapp_bot.ec10_crm_time_conflict(%s,%s,%s) crm,
+                          exists(select 1 from whatsapp_bot.ec10_bookings where seller_id=%s
+                            and status='confirmed' and starts_at<%s and ends_at>%s) booked
+                    """, (seller_id, starts_at, ends_at, seller_id, ends_at, starts_at))).fetchone()
+                    if conflicts["crm"] or conflicts["booked"]:
+                        raise ValueError("booking_option_taken")
+                    lead = await (await conn.execute("""
+                        select l.id,l.organization_id from public.leads l
+                        where l.organization_id=app_private.ec10_organization_id() and (
+                          l.data->>'whatsapp_client_id'=%s or l.data->>'whatsapp_crm_client_id'=%s
+                          or app_private.whatsapp_phone_match_key(coalesce(l.data->>'telefone_e164',l.data->>'telefone'))
+                            =app_private.whatsapp_phone_match_key(%s))
+                        order by (l.data->>'whatsapp_client_id'=%s) desc nulls last,
+                          (l.id not like 'wa-%%') desc,l.created_date,l.id limit 1 for update
+                    """, (client_id, client_id, phone, client_id))).fetchone()
+                    if not lead:
+                        raise ValueError("booking_lead_not_found")
+                    slot = await (await conn.execute("""
+                        insert into whatsapp_bot.ec10_booking_slots
+                          (seller_id,service,starts_at,ends_at,source,enabled,allowed_services)
+                        values(%s,%s,%s,%s,'gustavo_chat',true,array[%s]::text[])
+                        on conflict(seller_id,starts_at) do update set
+                          service=excluded.service,ends_at=excluded.ends_at,enabled=true,
+                          allowed_services=excluded.allowed_services
+                        returning id
+                    """, (seller_id, service, starts_at, ends_at, service))).fetchone()
+                    saved = await (await conn.execute("""
+                        insert into whatsapp_bot.ec10_bookings
+                          (slot_id,client_id,seller_id,service,contact_name,contact_role,athlete_age,phone,
+                           access_token_hash,starts_at,ends_at)
+                        values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        returning id,starts_at,ends_at
+                    """, (slot["id"], client_id, seller_id, service, name, role, age, digits(phone), digest,
+                          starts_at, ends_at))).fetchone()
+                    await conn.execute("""
+                        update whatsapp_bot.clients set name=coalesce(nullif(name,''),%s),status='orcamento',
+                          service_interest=%s,assigned_seller_id=%s,
+                          tags=array(select distinct unnest(coalesce(tags,'{}')||array['reuniao_agendada','plano_carreira'])),
+                          updated_at=now() where id=%s
+                    """, (name, service, seller_id, client_id))
+                    await conn.execute("""
+                        update whatsapp_bot.bot_conversation_states set stage='completed',completed_at=now(),
+                          athlete_age=%s,role_answer=%s,metadata=metadata||jsonb_build_object(
+                            'bookingContactPending',false,'guardianConfirmed',%s::boolean,'meeting',jsonb_build_object(
+                              'startsAt',%s::text,'endsAt',%s::text,'sellerName',%s::text,
+                              'source','gustavo_chat','bookingId',%s::text)),updated_at=now()
+                        where client_id=%s
+                    """, (age, role, age >= 18 or bool(state.get("guardian_confirmed")), starts_at.isoformat(),
+                          ends_at.isoformat(), schedule["display_name"], saved["id"], client_id))
+                    await conn.execute("""
+                        update public.leads set data=data||jsonb_build_object(
+                          'whatsapp_client_id',%s::text,'status','reuniao_agendada','idade',%s::integer,
+                          'perfil_contato',%s::text,'nome_contato',%s::text,
+                          'responsavel',case when %s='responsavel' then %s::text else data->>'responsavel' end,
+                          'reuniao_agendada_em',%s::text,'reuniao_vendedor',%s::text,'booking_id',%s::text),
+                          updated_by='gustavo-chat',updated_date=now()
+                        where id=%s and organization_id=%s
+                    """, (client_id, age, role, name, role, name, starts_at.isoformat(), schedule["display_name"],
+                          saved["id"], lead["id"], lead["organization_id"]))
+                    booking = {**dict(saved), "seller_name": schedule["display_name"],
+                               "display_name": schedule["display_name"], "access_token": token,
+                               "replayed": False}
+
+        start_value = booking["starts_at"]
+        end_value = booking["ends_at"]
+        stamp = lambda value: value.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        params = urlencode({
+            "action": "TEMPLATE",
+            "text": f"EC10 | Plano de Carreira | Reunião com {booking['display_name']}",
+            "dates": f"{stamp(start_value)}/{stamp(end_value)}",
+            "details": "Reunião comercial EC10. Os detalhes serão confirmados pelo WhatsApp.",
+        })
+        booking["google_calendar_url"] = f"https://calendar.google.com/calendar/render?{params}"
+        if booking.get("access_token"):
+            booking["apple_calendar_url"] = (
+                f"https://ec10talentos.com/api/booking-calendar?id={booking['id']}&t={booking['access_token']}"
+            )
+        booking["local_label"] = start_value.astimezone(ZoneInfo("America/Sao_Paulo")).strftime("%d/%m/%Y às %H:%M")
+        return booking
 
     async def enqueue(self, phone: str, key: str, message_type: str, payload: dict):
         async with await self.connect() as conn:

@@ -154,7 +154,7 @@ def merge_state(previous: dict, decision: Decision, inbound: str = "") -> dict:
         state[key] = value
     if state.get("contact_role") == "atleta" and state.get("contact_name") and not state.get("athlete_name"):
         state["athlete_name"] = state["contact_name"]
-    if isinstance(state.get("athlete_age"), int) and 9 <= state["athlete_age"] <= 18:
+    if isinstance(state.get("athlete_age"), int) and 8 <= state["athlete_age"] <= 18:
         state["service_interest"] = "plano_carreira"
     if state.get("contact_role") == "atleta" and isinstance(state.get("athlete_age"), int) and state["athlete_age"] < 18:
         state["guardian_confirmed"] = False
@@ -179,7 +179,7 @@ def booking_gate(state: dict, requested: bool) -> tuple[bool, Optional[str]]:
         return False, "nome_contato_ausente"
     if age < 18 and (not state.get("guardian_confirmed") or state.get("contact_role") != "responsavel"):
         return False, "responsavel_nao_confirmado"
-    if 9 <= age <= 18 and not state.get("audio_sent"):
+    if 8 <= age <= 18 and not state.get("audio_sent"):
         return False, "audio_eric_nao_enviado"
     if not state.get("meeting_interest"):
         return False, "interesse_reuniao_ausente"

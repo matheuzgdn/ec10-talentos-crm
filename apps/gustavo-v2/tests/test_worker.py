@@ -167,3 +167,54 @@ async def test_oracle_never_opens_booking_before_required_audio_is_delivered():
     assert result["booking_url"] is None
     assert "áudio do Eric Cena" in result["reply"]
     worker.db.create_booking_url.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_oracle_opens_day_poll_instead_of_external_link_when_qualified():
+    worker = object.__new__(Worker)
+    worker.settings = Settings(database_url="postgresql://test", gemini_api_key="test", gustavo_v2_enabled=True)
+    worker.oracle_locks = {}
+    worker.db = AsyncMock()
+    state = {**DEFAULT_STATE, "contact_name": "Bruno", "contact_role": "responsavel",
+             "guardian_confirmed": True, "athlete_name": "Marcelo", "athlete_age": 14,
+             "service_interest": "plano_carreira", "company_intro_sent": True,
+             "meeting_interest": True, "audio_sent": ["eric_14_18"]}
+    option = {"weekday_label": "Segunda-feira", "date_label": "21/09", "display_name": "Sandro",
+              "iso_date": "2026-09-21", "seller_id": "seller-1",
+              "starts_at": "2026-09-21T23:00:00+00:00", "ends_at": "2026-09-22T00:00:00+00:00"}
+    worker.db.oracle_turn_result.return_value = None
+    worker.db.conversation_context.return_value = (state, [], "test-client", [])
+    worker.db.list_chat_booking_days.return_value = [option]
+    worker.ai = AsyncMock()
+    worker.ai.decide.return_value = (
+        Decision(reply="Vou abrir a agenda agora.", stage="booking", booking_ready=True,
+                 facts={"meeting_interest": True}),
+        500, ["ai_route:gemini-test"],
+    )
+    result = await worker.oracle_turn("5531999990000", "wamid.poll-day", "Pode marcar", "test-client")
+    assert result["booking_url"] is None
+    assert result["poll"]["kind"] == "meeting_day"
+    assert result["poll"]["options"][0].endswith("Sandro")
+    saved_state = worker.db.finish_oracle_turn.await_args.args[7]
+    assert saved_state["chat_booking_stage"] == "day"
+    worker.db.create_booking_url.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_oracle_day_then_time_choice_never_calls_ai():
+    worker = object.__new__(Worker)
+    worker.settings = Settings(database_url="postgresql://test", gemini_api_key="test", gustavo_v2_enabled=True)
+    worker.oracle_locks = {}
+    worker.db = AsyncMock()
+    option = {"weekday_label": "Segunda-feira", "date_label": "21/09", "display_name": "Sandro",
+              "iso_date": "2026-09-21", "seller_id": "seller-1",
+              "starts_at": "2026-09-21T23:00:00+00:00", "ends_at": "2026-09-22T00:00:00+00:00"}
+    state = {**DEFAULT_STATE, "contact_name": "Bruno", "athlete_age": 14,
+             "chat_booking_stage": "day", "chat_booking_options": [option], "stage": "waiting_booking"}
+    worker.db.oracle_turn_result.return_value = None
+    worker.db.conversation_context.return_value = (state, [], "test-client", [])
+    worker.ai = AsyncMock()
+    result = await worker.oracle_turn("5531999990000", "wamid.poll-time", "1", "test-client")
+    assert result["poll"]["kind"] == "meeting_time"
+    assert result["poll"]["options"] == ["20:00", "Voltar e escolher outro dia"]
+    worker.ai.decide.assert_not_awaited()

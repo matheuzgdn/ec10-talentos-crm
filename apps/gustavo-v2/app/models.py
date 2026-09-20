@@ -52,4 +52,10 @@ DEFAULT_STATE = {
     "stage": "rapport",
     "audio_sent": [],
     "booking_url": None,
+    "chat_booking_stage": None,
+    "chat_booking_options": [],
+    "chat_booking_selected": None,
+    "booking_id": None,
+    "booking_starts_at": None,
+    "booking_seller": None,
 }

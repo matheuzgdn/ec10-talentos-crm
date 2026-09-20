@@ -3,6 +3,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from datetime import datetime, timedelta
+from .chat_booking import (
+    booking_confirmation,
+    day_poll,
+    is_schedule_like,
+    parse_day_choice,
+    parse_time_choice,
+    time_poll,
+)
 from .config import Settings
 from .database import Database
 from .gemini import GeminiSDR
@@ -31,6 +40,30 @@ class Worker:
         allowed = self.settings.allowed_phones
         return self.settings.gustavo_v2_enabled and (not allowed or phone in allowed)
 
+    async def _finish_oracle_schedule(self, phone: str, message_id: str, inbound: str,
+                                      before: dict, after: dict, reply: str,
+                                      poll: dict | None = None, booking: dict | None = None,
+                                      validation: dict | None = None) -> dict:
+        result = {
+            "reply": reply,
+            "audio_key": None,
+            "booking_url": None,
+            "poll": poll,
+            "booking": ({
+                "id": str(booking["id"]),
+                "starts_at": booking["starts_at"].isoformat(),
+                "seller_name": booking["display_name"],
+            } if booking else None),
+            "athlete_age": after.get("athlete_age"),
+            "stage": after.get("stage"),
+            "model": "gustavo-scheduler",
+        }
+        await self.db.finish_oracle_turn(
+            phone, message_id, inbound, reply, "gustavo-scheduler", 0, before, after, result,
+            validation or {"scheduler": True},
+        )
+        return result
+
     async def oracle_turn(self, phone: str, message_id: str, inbound: str, client_id: str,
                           known_name: str | None = None, known_age: int | None = None,
                           lead_source: str | None = None, service_interest: str | None = None) -> dict:
@@ -55,6 +88,93 @@ class Worker:
             if stage not in {"rapport", "discovery", "fit", "guardian", "offer", "booking", "waiting_booking", "human"}:
                 stage = "discovery"
             observed = merge_state(before, Decision(reply="Estado atualizado.", stage=stage), inbound)
+
+            schedule_stage = before.get("chat_booking_stage")
+            pending_poll = None
+            if schedule_stage == "day":
+                options = list(before.get("chat_booking_options") or [])
+                action, selected = parse_day_choice(inbound, options)
+                if action == "selected" and selected:
+                    after = dict(observed)
+                    after.update({
+                        "stage": "waiting_booking", "chat_booking_stage": "time",
+                        "chat_booking_selected": selected, "chat_booking_options": options,
+                        "booking_url": None,
+                    })
+                    return await self._finish_oracle_schedule(
+                        phone, message_id, inbound, before, after,
+                        "Certo. Agora escolha o horário abaixo.", time_poll(selected),
+                    )
+                if action == "next_week":
+                    latest = max((datetime.fromisoformat(str(item["starts_at"]).replace("Z", "+00:00"))
+                                  for item in options), default=None)
+                    new_options = await self.db.list_chat_booking_days(
+                        "plano_carreira", latest + timedelta(seconds=1) if latest else None,
+                    )
+                    after = dict(observed)
+                    after.update({"stage": "waiting_booking", "chat_booking_stage": "day",
+                                  "chat_booking_options": new_options, "chat_booking_selected": None,
+                                  "booking_url": None})
+                    return await self._finish_oracle_schedule(
+                        phone, message_id, inbound, before, after,
+                        "Aqui estão as próximas datas disponíveis.", day_poll(new_options),
+                    )
+                if is_schedule_like(inbound):
+                    return await self._finish_oracle_schedule(
+                        phone, message_id, inbound, before, observed,
+                        "Escolha uma das datas disponíveis na caixa abaixo.", day_poll(options),
+                        validation={"scheduler": True, "invalid_day_choice": True},
+                    )
+                pending_poll = day_poll(options)
+            elif schedule_stage == "time":
+                selected = before.get("chat_booking_selected") or {}
+                action = parse_time_choice(inbound)
+                if action == "back":
+                    options = await self.db.list_chat_booking_days("plano_carreira")
+                    after = dict(observed)
+                    after.update({"stage": "waiting_booking", "chat_booking_stage": "day",
+                                  "chat_booking_options": options, "chat_booking_selected": None,
+                                  "booking_url": None})
+                    return await self._finish_oracle_schedule(
+                        phone, message_id, inbound, before, after,
+                        "Sem problema. Escolha outro dia abaixo.", day_poll(options),
+                    )
+                if action == "confirm":
+                    try:
+                        booking = await self.db.reserve_chat_booking(
+                            phone, stored_client_id or client_id, observed, selected,
+                        )
+                    except ValueError as exc:
+                        if str(exc) not in {"booking_option_taken", "booking_option_invalid"}:
+                            raise
+                        options = await self.db.list_chat_booking_days("plano_carreira")
+                        after = dict(observed)
+                        after.update({"stage": "waiting_booking", "chat_booking_stage": "day",
+                                      "chat_booking_options": options, "chat_booking_selected": None})
+                        return await self._finish_oracle_schedule(
+                            phone, message_id, inbound, before, after,
+                            "Esse horário acabou de ser ocupado. Separei as próximas datas disponíveis.",
+                            day_poll(options), validation={"scheduler": True, "slot_race_recovered": True},
+                        )
+                    after = dict(observed)
+                    after.update({
+                        "stage": "waiting_booking", "chat_booking_stage": "confirmed",
+                        "booking_id": str(booking["id"]),
+                        "booking_starts_at": booking["starts_at"].isoformat(),
+                        "booking_seller": booking["display_name"], "booking_url": None,
+                    })
+                    return await self._finish_oracle_schedule(
+                        phone, message_id, inbound, before, after,
+                        booking_confirmation(booking), booking=booking,
+                    )
+                if is_schedule_like(inbound):
+                    return await self._finish_oracle_schedule(
+                        phone, message_id, inbound, before, observed,
+                        "Para confirmar sem erro, escolha uma opção abaixo.", time_poll(selected),
+                        validation={"scheduler": True, "invalid_time_choice": True},
+                    )
+                pending_poll = time_poll(selected)
+
             decision, latency, generation_errors = await self.ai.decide(observed, history, inbound)
             route_model = next((entry.split(":", 1)[1] for entry in generation_errors if entry.startswith("ai_route:")),
                                self.settings.gemini_model)
@@ -66,7 +186,7 @@ class Worker:
             audio_key = decision.audio_key
             age = after.get("athlete_age")
             expected_audio = None
-            if isinstance(age, int) and 9 <= age <= 13:
+            if isinstance(age, int) and 8 <= age <= 13:
                 expected_audio = "eric_8_13"
             elif isinstance(age, int) and 14 <= age <= 18:
                 expected_audio = "eric_14_18"
@@ -113,27 +233,26 @@ class Worker:
             if before.get("booking_url") and not explicit_booking_request:
                 booking_requested = False
             booking_allowed, gate_reason = booking_gate(after, booking_requested)
-            booking_url = after.get("booking_url")
+            booking_url = None
+            poll = pending_poll
             if booking_allowed and (stored_client_id or client_id):
                 service = after.get("service_interest")
                 if service not in {"plano_carreira", "plano_internacional", "eurocamp"}:
                     service = "plano_carreira"
-                role = "responsavel" if int(after.get("athlete_age") or 99) < 18 else (
-                    "responsavel" if after.get("contact_role") == "responsavel" else "atleta"
-                )
-                if not booking_url:
-                    booking_url = await self.db.create_booking_url(
-                        stored_client_id or client_id, service, after["contact_name"], role,
-                    )
-                after["booking_url"] = booking_url
-                after["stage"] = "waiting_booking"
-                if booking_url not in reply:
-                    reply = f"{reply}\n\n{booking_url}"
+                if service == "plano_carreira":
+                    options = await self.db.list_chat_booking_days(service)
+                    if not options:
+                        raise RuntimeError("chat_booking_no_available_days")
+                    after.update({"booking_url": None, "stage": "waiting_booking",
+                                  "chat_booking_stage": "day", "chat_booking_options": options,
+                                  "chat_booking_selected": None})
+                    poll = day_poll(options)
+                    reply = "Vou deixar os dias disponíveis logo abaixo para você escolher."
             elif booking_requested and gate_reason:
                 after["stage"] = "guardian" if gate_reason == "responsavel_nao_confirmado" else after.get("stage", "offer")
-            if before.get("booking_url") and not explicit_booking_request:
-                reply = reply.replace(str(before["booking_url"]), "o link que já enviei")
-                reply = re.sub(r"https://ec10talentos\.com/agendar\S+", "o link que já enviei", reply)
+            if pending_poll and not booking_allowed:
+                reply = re.sub(r"\s*[^.!?]*\?\s*$", "", reply).strip()
+                reply = f"{reply}\n\nDepois, escolha a opção na caixa abaixo.".strip()
             errors = validate_reply(reply, after)
             if "conteudo_tecnico_visivel" in errors:
                 raise RuntimeError("resposta_da_ia_rejeitada:" + ",".join(errors))
@@ -141,6 +260,8 @@ class Worker:
                 "reply": reply,
                 "audio_key": audio_key,
                 "booking_url": booking_url,
+                "poll": poll,
+                "booking": None,
                 "athlete_age": after.get("athlete_age"),
                 "stage": after.get("stage"),
                 "model": route_model,
@@ -207,7 +328,7 @@ class Worker:
             audio_key = decision.audio_key
             age = after.get("athlete_age")
             expected_audio = None
-            if isinstance(age, int) and 9 <= age <= 13:
+            if isinstance(age, int) and 8 <= age <= 13:
                 expected_audio = "eric_8_13"
             elif isinstance(age, int) and 14 <= age <= 18:
                 expected_audio = "eric_14_18"

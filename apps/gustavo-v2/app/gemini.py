@@ -45,7 +45,7 @@ class GeminiSDR:
             r"(?:qual|quais|que).{0,60}(?:dia|data|hor[aá]rio|disponibilidade)|"
             r"(?:quando|a que horas).{0,60}(?:reuni[aã]o|conversar|livre)", decision.reply, re.I,
         ):
-            errors.append("coleta_horario_fora_do_link")
+            errors.append("coleta_horario_fora_do_fluxo_controlado")
         if decision.booking_ready and "?" in decision.reply:
             errors.append("pergunta_apos_aceite_da_reuniao")
         if re.search(r"\b\d+\s*(?:minutos|min)\b", decision.reply, re.I):
@@ -55,7 +55,7 @@ class GeminiSDR:
         audio_sent = set(candidate.get("audio_sent") or [])
         if decision.audio_key:
             expected = None
-            if isinstance(age, int) and 9 <= age <= 13:
+            if isinstance(age, int) and 8 <= age <= 13:
                 expected = "eric_8_13"
             elif isinstance(age, int) and 14 <= age <= 18:
                 expected = "eric_14_18"
@@ -69,7 +69,7 @@ class GeminiSDR:
                 errors.append("agenda_sem_idade")
             if isinstance(age, int) and age < 18 and (not candidate.get("guardian_confirmed") or candidate.get("contact_role") != "responsavel"):
                 errors.append("agenda_sem_responsavel")
-            if isinstance(age, int) and 9 <= age <= 18 and not audio_sent:
+            if isinstance(age, int) and 8 <= age <= 18 and not audio_sent:
                 errors.append("agenda_antes_do_audio")
             if not candidate.get("meeting_interest"):
                 errors.append("agenda_sem_interesse")
@@ -102,7 +102,7 @@ class GeminiSDR:
             "abertura_engessada", "saudacao_repetida", "mais_de_uma_pergunta", "mensagem_longa",
             "repete_idade", "repete_nome", "resposta_repetida", "tom_de_bot",
             "pergunta_desnecessaria_sobre_audio",
-            "coleta_horario_fora_do_link", "pergunta_apos_aceite_da_reuniao",
+            "coleta_horario_fora_do_fluxo_controlado", "pergunta_apos_aceite_da_reuniao",
         }
         for model in self.models:
             for revision in range(2):
