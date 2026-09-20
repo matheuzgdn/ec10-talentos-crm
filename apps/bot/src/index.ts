@@ -4800,6 +4800,14 @@ async function confirmGustavoV2OracleAudioDelivery(
   } finally {clearTimeout(timeout);}
 }
 
+function gustavoV2AudioKeyForPath(path:string|null|undefined):GustavoV2OracleResult["audio_key"] {
+  const value=String(path||'').replace(/\\/g,'/').toLowerCase();
+  if(value.includes('02_8-13_plano-de-carreira.ogg'))return 'eric_8_13';
+  if(value.includes('13-17-plano-carreira/02_plano_1m49.ogg'))return 'eric_14_18';
+  if(value.includes('18-plus/02_18plus_1m54.ogg'))return 'eric_20_25';
+  return null;
+}
+
 async function handleGustavoV2Oracle(
   client:any,chatId:string,clientState:ClientAutomationState,body:string,mediaType:string,sourceMessageId:string|null,
 ) {
@@ -6965,6 +6973,11 @@ async function main() {
           }).catch((error) => {
             console.error("Failed to record queued outbound delivery", error);
           });
+          const deliveredEricAudio=queuedMediaType==='audio'?gustavoV2AudioKeyForPath(item.media_path):null;
+          if(deliveredEricAudio&&permission.clientState) {
+            await confirmGustavoV2OracleAudioDelivery(permission.clientState.phone,deliveredEricAudio)
+              .catch((error)=>console.error('Failed to confirm Eric audio in Gustavo V2',getErrorMessage(error)));
+          }
           if (!isWhatsAppAckConfirmed(whatsappAck)) {
             await recordTrafficEvent({
               clientId: item.client_id,

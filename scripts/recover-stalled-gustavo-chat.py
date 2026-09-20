@@ -19,6 +19,11 @@ from psycopg.rows import dict_row
 SINCE = datetime(2026, 9, 18, 3, 0, tzinfo=timezone.utc)
 RECOVERY_TAG = "gustavo_chat_recovery_20260920"
 PROTECTED_PHONES = {"553198526146", "5531995391330", "5592994432962"}
+PROTECTED_CLIENT_IDS = {
+    "ca59c2ed-a9a1-4234-ae1d-421a204bf423",  # commercial WhatsApp
+    "2decc423-7787-48f7-a662-321573631f83",  # isolated test contact
+    "a383d7e6-602d-4233-b482-b8688f898d01",  # isolated test contact
+}
 AUDIO_PATHS = {
     "eric_8_13": "media/audio/ec10/eric-2026-09-14/02_8-13_plano-de-carreira.ogg",
     "eric_14_18": "media/audio/bot-principal/13-17-plano-carreira/02_plano_1m49.ogg",
@@ -67,6 +72,7 @@ if not database_url:
 now = datetime.now(timezone.utc)
 recent_cutoff = now - timedelta(minutes=max(args.recent_minutes, 10))
 report: list[dict] = []
+recovery_sequence = 0
 
 with psycopg.connect(database_url, row_factory=dict_row) as connection:
     clients = connection.execute("""
@@ -138,7 +144,7 @@ with psycopg.connect(database_url, row_factory=dict_row) as connection:
         category = None
         if booking:
             reason = "already_booked"
-        elif str(client["phone"]) in PROTECTED_PHONES:
+        elif str(client["phone"]) in PROTECTED_PHONES or str(client["id"]) in PROTECTED_CLIENT_IDS:
             reason = "business_or_test_contact"
         elif client.get("bot_paused") or (v2 and v2.get("status") in {"human", "blocked"}):
             reason = "paused_or_human"
@@ -175,6 +181,15 @@ with psycopg.connect(database_url, row_factory=dict_row) as connection:
             continue
 
         contact_name = first_name(name)
+        if name and contact_name != "meu irmão":
+            state["contact_name"] = " ".join(str(name).split())[:80]
+        if age:
+            state["athlete_age"] = age
+        if role in {"atleta", "responsavel"}:
+            state["contact_role"] = role
+        if age and age < 18 and role == "responsavel":
+            state["guardian_confirmed"] = guardian
+        state["service_interest"] = "plano_carreira"
         if category == "minor_needs_responsible":
             body = (f"{contact_name}, vou retomar seu atendimento do ponto certo. Como o atleta é menor, "
                     "preciso continuar com o pai, a mãe ou o responsável legal. Ele pode se identificar por aqui?")
@@ -245,12 +260,14 @@ with psycopg.connect(database_url, row_factory=dict_row) as connection:
             update whatsapp_bot.clients set tags=array(select distinct unnest(coalesce(tags,'{}')||%s::text[])),
               service_interest=coalesce(service_interest,'plano_carreira'),updated_at=now() where id=%s
         """, ([RECOVERY_TAG, "plano_carreira", "aguardando_reuniao"], client["id"]))
+        base_offset = 5 + recovery_sequence * 25
+        recovery_sequence += 1
         for offset, media_type, body_value, media_path in outbound:
             connection.execute("""
                 insert into whatsapp_bot.outbound_messages
                   (client_id,bot_instance_id,phone,body,media_type,media_path,status,scheduled_at)
                 values(%s,'main',%s,%s,%s,%s,'queued',now()+(%s*interval '1 second'))
-            """, (client["id"], client["phone"], body_value, media_type, media_path, offset))
+            """, (client["id"], client["phone"], body_value, media_type, media_path, base_offset + offset))
 
     if args.apply:
         connection.commit()
