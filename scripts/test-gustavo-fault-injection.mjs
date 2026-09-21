@@ -51,6 +51,7 @@ for (const unsafe of [
 
 const indexSource = fs.readFileSync("apps/bot/src/index.ts", "utf8");
 const aiSource = fs.readFileSync("apps/bot/src/ai.ts", "utf8");
+const storeSource = fs.readFileSync("apps/bot/src/store.ts", "utf8");
 const whatsappPatchSource = fs.readFileSync("scripts/patch-whatsapp-web.cjs", "utf8");
 const primaryRouteSource = indexSource.match(/async function handleGustavoPrimaryRoute[\s\S]*?\n}\n\nasync function saveGustavoRecoveryPatch/)?.[0] || "";
 assert.match(primaryRouteSource, /handleGustavoMandatorySequence\(/);
@@ -67,10 +68,21 @@ assert.match(indexSource, /sanitizeBotOutboundBody/);
 assert.match(indexSource, /findRecentSentAudio/);
 assert.match(indexSource, /confirmGustavoV2OracleAudioDelivery/);
 assert.match(indexSource, /gustavo_v2_audio_not_delivered/);
+assert.match(indexSource, /checkBotPersistenceHealth/);
+assert.match(indexSource, /status = persistence\.ok \? currentBotStatus : "degraded"/);
+assert.match(indexSource, /recoverMissedInboundMessages/);
+assert.match(indexSource, /Recovered missed WhatsApp inbound messages/);
+assert.match(indexSource, /combinedBody = recovered\.map/);
+assert.match(storeSource, /const botDbSchema = `\"\$\{config\.BOT_DB_SCHEMA\}\"`/);
+assert.match(storeSource, /select 1 from \$\{botDbSchema\}\.clients limit 1/);
+assert.doesNotMatch(
+  storeSource,
+  /public\.(?:bot_conversation_states|bot_dedupe_locks|bot_rules|bot_runtime|calls|clients|ec10_bot_booking_links|messages|outbound_messages|sellers|traffic_events|lead_status)/,
+);
 assert.match(whatsappPatchSource, /delete message\.__x_id/);
 
 console.log(JSON.stringify({
-  passed: positiveReplies.length + 20,
-  total: positiveReplies.length + 20,
+  passed: positiveReplies.length + 28,
+  total: positiveReplies.length + 28,
   noWhatsAppSent: true,
 }, null, 2));

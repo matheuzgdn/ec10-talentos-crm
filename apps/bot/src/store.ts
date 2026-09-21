@@ -137,6 +137,13 @@ export type BotLabWhatsappMessage = {
 let client: SupabaseClient<any, any, any, any, any> | null = null;
 let pool: Pool | null = null;
 let botDedupeTableReady = false;
+// BOT_DB_SCHEMA is validated as an SQL identifier in config.ts. Quoting it
+// keeps the direct PostgreSQL path aligned with the PostgREST schema.
+const botDbSchema = `"${config.BOT_DB_SCHEMA}"`;
+let persistenceHealthCache: {
+  expiresAt: number;
+  value: { ok: boolean; backend: "postgres" | "supabase" | "unconfigured"; error?: string };
+} | null = null;
 
 function currentBotInstanceId() {
   return config.BOT_INSTANCE_ID;
@@ -251,6 +258,40 @@ function getDatabase() {
     });
   }
   return pool;
+}
+
+export async function checkBotPersistenceHealth(force = false) {
+  const now = Date.now();
+  if (!force && persistenceHealthCache && persistenceHealthCache.expiresAt > now) {
+    return persistenceHealthCache.value;
+  }
+
+  let value: { ok: boolean; backend: "postgres" | "supabase" | "unconfigured"; error?: string };
+  try {
+    const database = getDatabase();
+    if (database) {
+      await database.query(`select 1 from ${botDbSchema}.clients limit 1`);
+      value = { ok: true, backend: "postgres" };
+    } else {
+      const supabase = getSupabase();
+      if (!supabase) {
+        value = { ok: false, backend: "unconfigured", error: "persistence_unconfigured" };
+      } else {
+        const { error } = await supabase.from("clients").select("id", { head: true, count: "estimated" });
+        if (error) throw error;
+        value = { ok: true, backend: "supabase" };
+      }
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    value = {
+      ok: false,
+      backend: hasDirectDatabaseConfig ? "postgres" : (hasServerSupabaseConfig ? "supabase" : "unconfigured"),
+      error: /exceed_egress_quota/i.test(message) ? "exceed_egress_quota" : "persistence_unavailable",
+    };
+  }
+  persistenceHealthCache = { expiresAt: now + 10_000, value };
+  return value;
 }
 
 export async function fetchEc10LearningBase() {
@@ -544,7 +585,7 @@ async function ensureBotDedupeTable(database: Pool | PoolClient) {
   if (botDedupeTableReady) return;
 
   await database.query(`
-    create table if not exists public.bot_dedupe_locks (
+    create table if not exists ${botDbSchema}.bot_dedupe_locks (
       key text primary key,
       scope text not null,
       client_id uuid null,
@@ -557,7 +598,7 @@ async function ensureBotDedupeTable(database: Pool | PoolClient) {
   `);
   await database.query(`
     create index if not exists bot_dedupe_locks_expires_at_idx
-      on public.bot_dedupe_locks (expires_at)
+      on ${botDbSchema}.bot_dedupe_locks (expires_at)
   `);
   await database.query(`
     with ranked as (
@@ -566,12 +607,12 @@ async function ensureBotDedupeTable(database: Pool | PoolClient) {
                partition by whatsapp_message_id
                order by created_at asc, id asc
              ) as rn
-      from public.messages
+      from ${botDbSchema}.messages
       where direction = 'inbound'
         and nullif(whatsapp_message_id, '') is not null
         and whatsapp_message_id not like '%:duplicate:%'
     )
-    update public.messages m
+    update ${botDbSchema}.messages m
     set whatsapp_message_id = concat(m.whatsapp_message_id, ':duplicate:', m.id::text)
     from ranked
     where ranked.id = m.id
@@ -579,7 +620,7 @@ async function ensureBotDedupeTable(database: Pool | PoolClient) {
   `);
   await database.query(`
     create unique index if not exists messages_inbound_whatsapp_message_id_unique
-      on public.messages (whatsapp_message_id)
+      on ${botDbSchema}.messages (whatsapp_message_id)
       where direction = 'inbound'
         and nullif(whatsapp_message_id, '') is not null
   `);
@@ -598,11 +639,11 @@ async function tryAcquireDatabaseDedupeLock(
   }
 ) {
   await ensureBotDedupeTable(database);
-  await database.query("delete from public.bot_dedupe_locks where expires_at < now()");
+  await database.query(`delete from ${botDbSchema}.bot_dedupe_locks where expires_at < now()`);
   const ttlSeconds = Math.max(1, Math.round(input.ttlSeconds));
   const { rowCount } = await database.query(
     `
-      insert into public.bot_dedupe_locks
+      insert into ${botDbSchema}.bot_dedupe_locks
         (key, scope, client_id, phone, expires_at, metadata, updated_at)
       values
         ($1, $2, $3, $4, now() + make_interval(secs => $5::int), $6::jsonb, now())
@@ -614,7 +655,7 @@ async function tryAcquireDatabaseDedupeLock(
         expires_at = excluded.expires_at,
         metadata = excluded.metadata,
         updated_at = now()
-      where public.bot_dedupe_locks.expires_at < now()
+      where ${botDbSchema}.bot_dedupe_locks.expires_at < now()
     `,
     [
       input.key,
@@ -648,7 +689,7 @@ async function findClientByPhoneCandidates(database: Pool, phone: string) {
     `
       select id, bot_instance_id, phone, name, bot_paused, tags,
              source, service_interest, athlete_age, traffic_source, utm_source, utm_campaign, fbclid, attribution_metadata
-      from public.clients
+      from ${botDbSchema}.clients
       where phone = any($1::text[])
       order by
         case when bot_instance_id = $3 then 0 else 1 end,
@@ -707,7 +748,7 @@ export async function recordTrafficEvent(input: {
     if (database) {
       await database.query(
         `
-          insert into public.traffic_events
+          insert into ${botDbSchema}.traffic_events
             (client_id, bot_instance_id, phone, event_type, channel, platform, service_interest,
              athlete_age, age_group, lead_status, quality_score, campaign_id,
              campaign_name, adset_id, ad_id, metadata)
@@ -754,7 +795,7 @@ export async function getClientTrafficAttribution(clientId: string): Promise<Cli
     const { rows } = await database.query<ClientTrafficAttribution>(
       `
         select id, phone, service_interest, lead_score, fbclid, attribution_metadata
-        from public.clients
+        from ${botDbSchema}.clients
         where id = $1
         limit 1
       `,
@@ -813,7 +854,7 @@ export async function upsertInboundMessage(input: {
         if (!acquired) {
           await connection.query(
             `
-              insert into public.traffic_events
+              insert into ${botDbSchema}.traffic_events
                 (client_id, bot_instance_id, phone, event_type, channel, platform, metadata)
               values
                 (null, $1, $2, 'whatsapp_inbound_duplicate_suppressed', 'whatsapp', 'whatsapp', $3::jsonb)
@@ -851,7 +892,7 @@ export async function upsertInboundMessage(input: {
         if (!acquired) {
           await connection.query(
             `
-              insert into public.traffic_events
+              insert into ${botDbSchema}.traffic_events
                 (client_id, bot_instance_id, phone, event_type, channel, platform, metadata)
               values
                 (null, $1, $2, 'whatsapp_inbound_duplicate_suppressed', 'whatsapp', 'whatsapp', $3::jsonb)
@@ -886,8 +927,8 @@ export async function upsertInboundMessage(input: {
           `
             select m.id, m.client_id, m.body,
                    ($1::text <> '' and m.whatsapp_message_id = $1::text) as same_whatsapp_id
-            from public.messages m
-            join public.clients c on c.id = m.client_id
+            from ${botDbSchema}.messages m
+            join ${botDbSchema}.clients c on c.id = m.client_id
             where m.direction = 'inbound'
               and m.bot_instance_id = $5
               and (
@@ -913,7 +954,7 @@ export async function upsertInboundMessage(input: {
           if (existingMessage.same_whatsapp_id && inboundBody && !(existingMessage.body ?? "").trim()) {
             await connection.query(
               `
-                update public.messages
+                update ${botDbSchema}.messages
                 set body = $2,
                     media_type = $3
                 where id = $1
@@ -922,8 +963,8 @@ export async function upsertInboundMessage(input: {
             );
             const clientRow = await connection.query<ClientAutomationState>(
               `
-                update public.clients
-                set name = coalesce($2, public.clients.name),
+                update ${botDbSchema}.clients
+                set name = coalesce($2, ${botDbSchema}.clients.name),
                     last_message_at = now(),
                     updated_at = now()
                 where id = $1
@@ -934,7 +975,7 @@ export async function upsertInboundMessage(input: {
             );
             await connection.query(
               `
-                insert into public.traffic_events
+                insert into ${botDbSchema}.traffic_events
                   (client_id, bot_instance_id, phone, event_type, channel, platform, metadata)
                 values
                   ($1, $2, $3, 'whatsapp_inbound_transcript_updated', 'whatsapp', 'whatsapp', $4::jsonb)
@@ -952,7 +993,7 @@ export async function upsertInboundMessage(input: {
 
           await connection.query(
             `
-              insert into public.traffic_events
+              insert into ${botDbSchema}.traffic_events
                 (client_id, bot_instance_id, phone, event_type, channel, platform, metadata)
               values
                 ($1, $2, $3, 'whatsapp_inbound_duplicate_suppressed', 'whatsapp', 'whatsapp', $4::jsonb)
@@ -979,7 +1020,7 @@ export async function upsertInboundMessage(input: {
         `
           select id, bot_instance_id, phone, name, bot_paused, tags,
                  source, service_interest, athlete_age, traffic_source, utm_source, utm_campaign, fbclid, attribution_metadata
-          from public.clients
+          from ${botDbSchema}.clients
           where phone = any($1::text[])
           order by
             case when bot_instance_id = $3 then 0 else 1 end,
@@ -995,8 +1036,8 @@ export async function upsertInboundMessage(input: {
       const clientRow = existingClient.rows[0]
         ? await connection.query<ClientAutomationState>(
             `
-              update public.clients
-              set name = coalesce($2, public.clients.name),
+              update ${botDbSchema}.clients
+              set name = coalesce($2, ${botDbSchema}.clients.name),
                   last_message_at = now(),
                   updated_at = now()
               where id = $1
@@ -1007,11 +1048,11 @@ export async function upsertInboundMessage(input: {
           )
         : await connection.query<ClientAutomationState>(
             `
-              insert into public.clients (bot_instance_id, phone, name, last_message_at, updated_at, status, source, service_interest, tags)
+              insert into ${botDbSchema}.clients (bot_instance_id, phone, name, last_message_at, updated_at, status, source, service_interest, tags)
               values ($3, $1, $2, now(), now(), 'novo', 'whatsapp', 'plano_carreira', array['entrada_direta_whatsapp']::text[])
               on conflict (phone)
               do update set
-                name = coalesce(excluded.name, public.clients.name),
+                name = coalesce(excluded.name, ${botDbSchema}.clients.name),
                 last_message_at = excluded.last_message_at,
                 updated_at = now()
               returning id, bot_instance_id, phone, name, bot_paused, tags,
@@ -1022,7 +1063,7 @@ export async function upsertInboundMessage(input: {
 
       const insertedMessage = await connection.query<{ id: string }>(
         `
-          insert into public.messages
+          insert into ${botDbSchema}.messages
             (client_id, bot_instance_id, direction, body, media_type, whatsapp_message_id)
           values ($1, $5, 'inbound', $2, $3, $4)
           on conflict do nothing
@@ -1033,7 +1074,7 @@ export async function upsertInboundMessage(input: {
       if (!insertedMessage.rows.length) {
         await connection.query(
           `
-            insert into public.traffic_events
+            insert into ${botDbSchema}.traffic_events
               (client_id, bot_instance_id, phone, event_type, channel, platform, metadata)
             values
               ($1, $2, $3, 'whatsapp_inbound_duplicate_suppressed', 'whatsapp', 'whatsapp', $4::jsonb)
@@ -1056,7 +1097,7 @@ export async function upsertInboundMessage(input: {
       }
       await connection.query(
         `
-          insert into public.traffic_events
+          insert into ${botDbSchema}.traffic_events
             (client_id, bot_instance_id, phone, event_type, channel, platform, metadata)
           values
             ($1, $2, $3, 'whatsapp_inbound', 'whatsapp', 'whatsapp', $4::jsonb)
@@ -1236,12 +1277,12 @@ export async function recordIncomingWhatsAppCall(input: IncomingWhatsAppCall) {
       await connection.query("begin");
       const candidates = phoneLookupCandidates(phone);
       const existing = await connection.query<{ id: string }>(
-        `select id from public.clients where phone = any($1::text[]) order by updated_at desc limit 1`,
+        `select id from ${botDbSchema}.clients where phone = any($1::text[]) order by updated_at desc limit 1`,
         [candidates]
       );
       const clientId = existing.rows[0]?.id ?? (
         await connection.query<{ id: string }>(
-          `insert into public.clients (bot_instance_id, phone, name, status, source, service_interest, tags, updated_at)
+          `insert into ${botDbSchema}.clients (bot_instance_id, phone, name, status, source, service_interest, tags, updated_at)
            values ($2, $1, $3, 'novo', 'whatsapp', 'plano_carreira', array['chamada_whatsapp'], now())
            on conflict (phone) do update set updated_at = now()
            returning id`,
@@ -1249,11 +1290,11 @@ export async function recordIncomingWhatsAppCall(input: IncomingWhatsAppCall) {
         )
       ).rows[0].id;
       await connection.query(
-        `insert into public.calls
+        `insert into ${botDbSchema}.calls
           (client_id, bot_instance_id, whatsapp_call_id, phone, direction, call_type, status, started_at, metadata)
          values ($1, $2, $3, $4, 'inbound', $5, 'received', $6::timestamptz, $7::jsonb)
          on conflict (bot_instance_id, whatsapp_call_id)
-         do update set status = excluded.status, metadata = public.calls.metadata || excluded.metadata`,
+         do update set status = excluded.status, metadata = ${botDbSchema}.calls.metadata || excluded.metadata`,
         [clientId, botInstanceId, input.whatsappCallId, phone, input.callType, input.startedAt, JSON.stringify(metadata)]
       );
       await connection.query("commit");
@@ -1320,14 +1361,14 @@ export async function createBotBookingLink(input:{clientId:string;service:string
       &&url.searchParams.get('servico')===input.service&&/^[A-Za-z0-9_-]{43}$/.test(savedToken)) {
       const savedHash=createHash('sha256').update(savedToken).digest('hex');
       const row=database
-        ?(await database.query(`select expires_at,booking_id from public.ec10_bot_booking_links where access_token_hash=$1 and client_id=$2 and service=$3`,[savedHash,input.clientId,input.service])).rows[0]
+        ?(await database.query(`select expires_at,booking_id from ${botDbSchema}.ec10_bot_booking_links where access_token_hash=$1 and client_id=$2 and service=$3`,[savedHash,input.clientId,input.service])).rows[0]
         :(await getSupabase()!.from('ec10_bot_booking_links').select('expires_at,booking_id').eq('access_token_hash',savedHash).eq('client_id',input.clientId).eq('service',input.service).maybeSingle()).data;
       if(row&&(row.booking_id||new Date(row.expires_at).getTime()>Date.now()))return url.href;
     }
   }catch{ /* An unverifiable legacy link must never choose the confirmation destination. */ }
   const token=randomBytes(32).toString('base64url');
   const hash=createHash('sha256').update(token).digest('hex');
-  if(database) await database.query(`insert into public.ec10_bot_booking_links(access_token_hash,client_id,service,contact_name,contact_role) values($1,$2,$3,$4,$5)`,[hash,input.clientId,input.service,input.name,input.role]);
+  if(database) await database.query(`insert into ${botDbSchema}.ec10_bot_booking_links(access_token_hash,client_id,service,contact_name,contact_role) values($1,$2,$3,$4,$5)`,[hash,input.clientId,input.service,input.name,input.role]);
   else {
     const supabase=getSupabase();
     if(!supabase)throw new Error('Booking link storage unavailable');
@@ -1343,10 +1384,10 @@ export async function fetchPendingWhatsAppPolls(limit = 200, clientId?: string):
   if (database) {
     const { rows } = await database.query<PendingWhatsAppPoll>(`
       select c.id as client_id, c.phone, p.whatsapp_message_id, p.created_at
-      from public.clients c
+      from ${botDbSchema}.clients c
       join lateral (
         select m.whatsapp_message_id, m.created_at
-        from public.messages m
+        from ${botDbSchema}.messages m
         where m.client_id=c.id and m.bot_instance_id=$1
           and m.direction='outbound' and m.media_type='poll'
           and m.whatsapp_message_id is not null
@@ -1356,7 +1397,7 @@ export async function fetchPendingWhatsAppPolls(limit = 200, clientId?: string):
         and ($3::uuid is null or c.id=$3::uuid)
         and (cardinality($4::text[])=0 or c.phone=any($4::text[]))
         and p.created_at > now()-interval '7 days'
-        and not exists (select 1 from public.messages newer
+        and not exists (select 1 from ${botDbSchema}.messages newer
           where newer.client_id=c.id and newer.bot_instance_id=$1
             and newer.direction='inbound' and newer.created_at>p.created_at)
       order by p.created_at desc limit $2
@@ -1402,7 +1443,7 @@ export async function fetchQueuedOutboundMessages(limit = 1): Promise<OutboundMe
         select id, client_id, bot_instance_id, phone, body, media_type, media_path,
                media_mime_type, media_file_name, media_size_bytes,
                whatsapp_message_id, whatsapp_ack, whatsapp_send_attempts
-        from public.outbound_messages
+        from ${botDbSchema}.outbound_messages
         where status = 'queued'
           and bot_instance_id = $3
           and (cardinality($4::text[]) = 0 or phone=any($4::text[]))
@@ -1470,12 +1511,12 @@ export async function scheduleOutboundTextMessage(input: {
   if (database) {
     await database.query(
       `
-        insert into public.outbound_messages
+        insert into ${botDbSchema}.outbound_messages
           (client_id, bot_instance_id, phone, body, media_type, media_path, status, scheduled_at)
         select $1, $6, $2, $3, 'text', $5, 'queued', $4::timestamptz
         where not exists (
           select 1
-          from public.outbound_messages
+          from ${botDbSchema}.outbound_messages
           where client_id = $1
             and bot_instance_id = $6
             and phone = $2
@@ -1544,13 +1585,13 @@ export async function scheduleOutboundRecoveryTextMessage(input: {
   if (database) {
     await database.query(
       `
-        insert into public.outbound_messages
+        insert into ${botDbSchema}.outbound_messages
           (client_id, bot_instance_id, phone, body, media_type, status, scheduled_at,
            error_message, whatsapp_send_attempts)
         select $1, $6, $2, $3, 'text', 'queued', $4::timestamptz, $5, 1
         where not exists (
           select 1
-          from public.outbound_messages
+          from ${botDbSchema}.outbound_messages
           where client_id = $1
             and bot_instance_id = $6
             and phone = $2
@@ -1607,12 +1648,12 @@ export async function scheduleOutboundPollMessage(input: {
   if (database) {
     await database.query(
       `
-        insert into public.outbound_messages
+        insert into ${botDbSchema}.outbound_messages
           (client_id, bot_instance_id, phone, body, media_type, media_path, status, scheduled_at)
         select $1, $6, $2, $3, 'poll', $5, 'queued', $4::timestamptz
         where not exists (
           select 1
-          from public.outbound_messages
+          from ${botDbSchema}.outbound_messages
           where client_id = $1
             and bot_instance_id = $6
             and phone = $2
@@ -1679,12 +1720,12 @@ export async function scheduleOutboundAudioMessage(input: {
   if (database) {
     await database.query(
       `
-        insert into public.outbound_messages
+        insert into ${botDbSchema}.outbound_messages
           (client_id, bot_instance_id, phone, body, media_type, media_path, status, scheduled_at)
         select $1, $6, $2, $3, 'audio', $5, 'queued', $4::timestamptz
         where not exists (
           select 1
-          from public.outbound_messages
+          from ${botDbSchema}.outbound_messages
           where client_id = $1
             and bot_instance_id = $6
             and phone = $2
@@ -1735,7 +1776,7 @@ export async function cancelQueuedFollowUpMessages(clientId: string, reason = "F
   if (database) {
     await database.query(
       `
-        update public.outbound_messages
+        update ${botDbSchema}.outbound_messages
         set status = 'cancelled',
             error_message = $2
         where client_id = $1
@@ -1770,7 +1811,7 @@ export async function cancelQueuedMeetingMessages(clientId: string, reason = "Me
   if (database) {
     await database.query(
       `
-        update public.outbound_messages
+        update ${botDbSchema}.outbound_messages
         set status = 'cancelled',
             error_message = $2
         where client_id = $1
@@ -1834,7 +1875,7 @@ export async function getClientAutomationStateById(clientId: string): Promise<Cl
       `
         select id, bot_instance_id, phone, name, bot_paused, tags,
                source, service_interest, athlete_age, traffic_source, utm_source, utm_campaign, fbclid, attribution_metadata
-        from public.clients
+        from ${botDbSchema}.clients
         where id = $1
         limit 1
       `,
@@ -1866,11 +1907,11 @@ export async function appendClientTags(clientId: string, tags: string[]) {
   if (database) {
     await database.query(
       `
-        update public.clients
+        update ${botDbSchema}.clients
         set tags = (
               select array(
                 select distinct value
-                from unnest(coalesce(public.clients.tags, '{}') || $2::text[]) as tags(value)
+                from unnest(coalesce(${botDbSchema}.clients.tags, '{}') || $2::text[]) as tags(value)
                 where value is not null and value <> ''
               )
             ),
@@ -1904,7 +1945,7 @@ export async function appendClientTags(clientId: string, tags: string[]) {
 export async function hasClientOutboundMessages(clientId:string) {
   const database=getDatabase(),supabase=getSupabase();
   if(!clientId||(!database&&!supabase))throw new Error('Welcome history unavailable');
-  if(database)return Boolean((await database.query(`select id from public.messages where client_id=$1
+  if(database)return Boolean((await database.query(`select id from ${botDbSchema}.messages where client_id=$1
     and bot_instance_id=$2 and direction='outbound' limit 1`,[clientId,currentBotInstanceId()])).rowCount);
   const {data,error}=await supabase!.from('messages').select('id').eq('client_id',clientId)
     .eq('bot_instance_id',currentBotInstanceId()).eq('direction','outbound').limit(1);
@@ -1926,7 +1967,7 @@ export async function fetchRecentClientMessages(clientId: string, limit = 12): P
       created_at: string;
     }>(`
       select direction, body, media_type, created_at
-      from public.messages
+      from ${botDbSchema}.messages
       where client_id = $1 and bot_instance_id = $2
       order by created_at desc
       limit $3
@@ -2017,16 +2058,16 @@ export async function updateClientAiProfile(input: {
 
   if (database) {
     await database.query(`
-      update public.clients
+      update ${botDbSchema}.clients
       set status = case
-            when $5::boolean or $4::text = 'quente' then 'quente'::public.lead_status
-            when status = 'novo' then 'triagem'::public.lead_status
+            when $5::boolean or $4::text = 'quente' then 'quente'::${botDbSchema}.lead_status
+            when status = 'novo' then 'triagem'::${botDbSchema}.lead_status
             else status
           end,
           service_interest = coalesce($2::text, service_interest),
           athlete_age = coalesce($3::int, athlete_age),
           bot_paused = case when $8::boolean then true else bot_paused end,
-          tags = (select array(select distinct value from unnest(coalesce(public.clients.tags, '{}') || $6::text[]) tags(value) where value <> '')),
+          tags = (select array(select distinct value from unnest(coalesce(${botDbSchema}.clients.tags, '{}') || $6::text[]) tags(value) where value <> '')),
           attribution_metadata = coalesce(attribution_metadata, '{}'::jsonb)
             || jsonb_build_object('ai_sdr', coalesce(attribution_metadata->'ai_sdr', '{}'::jsonb) || $7::jsonb),
           updated_at = now()
@@ -2076,17 +2117,17 @@ export async function markClientForFollowUp(input: {
   if (database) {
     await database.query(
       `
-        update public.clients
-        set status = $2::public.lead_status,
+        update ${botDbSchema}.clients
+        set status = $2::${botDbSchema}.lead_status,
             next_follow_up_at = $3::timestamptz,
             tags = (
               select array(
                 select distinct value
-                from unnest(coalesce(public.clients.tags, '{}') || $4::text[]) as tags(value)
+                from unnest(coalesce(${botDbSchema}.clients.tags, '{}') || $4::text[]) as tags(value)
                 where value is not null and value <> ''
               )
             ),
-            notes = trim(both E'\n' from concat_ws(E'\n\n', nullif(public.clients.notes, ''), $5::text)),
+            notes = trim(both E'\n' from concat_ws(E'\n\n', nullif(${botDbSchema}.clients.notes, ''), $5::text)),
             updated_at = now()
         where id = $1
       `,
@@ -2138,7 +2179,7 @@ export async function markOutboundMessage(
   if (database) {
     await database.query(
       `
-        update public.outbound_messages
+        update ${botDbSchema}.outbound_messages
         set status = $2,
             error_message = $3,
             sent_at = case when $2 = 'sent' then now() else null end,
@@ -2191,7 +2232,7 @@ export async function requeueOutboundMessage(
   if (database) {
     await database.query(
       `
-        update public.outbound_messages
+        update ${botDbSchema}.outbound_messages
         set status = 'queued',
             error_message = $2,
             sent_at = null,
@@ -2243,7 +2284,7 @@ export async function fetchActiveBotRules(): Promise<BotRule[]> {
     const { rows } = await database.query<BotRule>(
       `
         select id, name, trigger, response_text, response_audio_path, priority, once_per_client, cooldown_minutes
-        from public.bot_rules
+        from ${botDbSchema}.bot_rules
         where active = true
         order by priority asc, created_at asc
       `
@@ -2296,7 +2337,7 @@ export async function shouldSendRuleResponse(clientId: string, rule: BotRule) {
       `
         select exists (
           select 1
-          from public.messages
+          from ${botDbSchema}.messages
           where client_id = $1
             and bot_instance_id = $4
             and direction = 'outbound'
@@ -2359,7 +2400,7 @@ export async function recordOutboundChatMessage(input: {
   if (database) {
     await database.query(
       `
-        insert into public.messages
+        insert into ${botDbSchema}.messages
           (client_id, bot_instance_id, direction, body, media_type, media_path,
            whatsapp_message_id, whatsapp_chat_id, whatsapp_ack, whatsapp_ack_at)
         values ($1, $6, 'outbound', $2, $3, $4, $5, $7, $8, case when $8::int is not null then now() else null end)
@@ -2429,7 +2470,7 @@ export async function recordQueuedOutboundDelivery(input: {
       `
         with candidate as (
           select id
-          from public.messages
+          from ${botDbSchema}.messages
           where client_id = $1
             and bot_instance_id = $6
             and direction = 'outbound'
@@ -2443,7 +2484,7 @@ export async function recordQueuedOutboundDelivery(input: {
           limit 1
         ),
         updated as (
-          update public.messages message
+          update ${botDbSchema}.messages message
           set whatsapp_message_id = coalesce($5::text, message.whatsapp_message_id),
               whatsapp_chat_id = coalesce($7::text, message.whatsapp_chat_id),
               whatsapp_ack = coalesce($8::int, message.whatsapp_ack),
@@ -2452,14 +2493,14 @@ export async function recordQueuedOutboundDelivery(input: {
           where message.id = candidate.id
           returning message.id
         )
-        insert into public.messages
+        insert into ${botDbSchema}.messages
           (client_id, bot_instance_id, direction, body, media_type, media_path,
            whatsapp_message_id, whatsapp_chat_id, whatsapp_ack, whatsapp_ack_at)
         select $1, $6, 'outbound', $2, $3, $4, $5, $7, $8, case when $8::int is not null then now() else null end
         where not exists (select 1 from updated)
           and not exists (
             select 1
-            from public.messages
+            from ${botDbSchema}.messages
             where $5::text is not null
               and whatsapp_message_id = $5::text
               and direction = 'outbound'
@@ -2557,7 +2598,7 @@ export async function recordWhatsAppMessageAck(input: {
   if (database) {
     await database.query(
       `
-        update public.messages
+        update ${botDbSchema}.messages
         set whatsapp_ack = case
               when whatsapp_ack is null or $2::int > whatsapp_ack then $2::int
               else whatsapp_ack
@@ -2572,7 +2613,7 @@ export async function recordWhatsAppMessageAck(input: {
     );
     await database.query(
       `
-        update public.outbound_messages
+        update ${botDbSchema}.outbound_messages
         set whatsapp_ack = case
               when whatsapp_ack is null or $2::int > whatsapp_ack then $2::int
               else whatsapp_ack
@@ -2628,7 +2669,7 @@ export async function hasRecentOutboundChatMessage(input: {
       `
         select exists (
           select 1
-          from public.messages
+          from ${botDbSchema}.messages
           where client_id = $1
             and bot_instance_id = $6
             and direction = 'outbound'
@@ -2693,7 +2734,7 @@ export async function countRecentOutboundChatMessages(input: {
     const { rows } = await database.query<{ count: string }>(
       `
         select count(*)::text as count
-        from public.messages
+        from ${botDbSchema}.messages
         where client_id = $1
           and bot_instance_id = $2
           and direction = 'outbound'
@@ -2734,7 +2775,7 @@ export async function upsertBotRuntime(key: string, payload: Record<string, unkn
   if (database) {
     await database.query(
       `
-        insert into public.bot_runtime (key, payload, updated_at)
+        insert into ${botDbSchema}.bot_runtime (key, payload, updated_at)
         values ($1, $2::jsonb, now())
         on conflict (key)
         do update set payload = excluded.payload, updated_at = now()
@@ -2763,7 +2804,7 @@ export async function getBotRuntime(key: string): Promise<Record<string, unknown
 
   if (database) {
     const { rows } = await database.query<{ payload: Record<string, unknown> | null }>(
-      "select payload from public.bot_runtime where key = $1 limit 1",
+      `select payload from ${botDbSchema}.bot_runtime where key = $1 limit 1`,
       [runtimeKey]
     );
     const payload = rows[0]?.payload;
@@ -2795,7 +2836,7 @@ export async function getBotConversationState(phoneInput: string): Promise<BotCo
       `
         with target_client as (
           select id
-          from public.clients
+          from ${botDbSchema}.clients
           where phone = any($1::text[])
           order by
             case when bot_instance_id = $3 then 0 else 1 end,
@@ -2806,7 +2847,7 @@ export async function getBotConversationState(phoneInput: string): Promise<BotCo
         )
         select b.id, b.client_id, b.phone, b.stage, b.role_answer, b.athlete_age, b.age_group,
                b.service_interest, b.lead_page_url, b.completed_at, b.metadata
-        from public.bot_conversation_states b
+        from ${botDbSchema}.bot_conversation_states b
         left join target_client tc on true
         where (b.client_id = tc.id and b.bot_instance_id = $3)
            or (
@@ -2849,7 +2890,7 @@ export async function fetchDueGustavoRecoveryStates(limit = 20): Promise<BotConv
     const { rows } = await database.query<BotConversationState>(`
       select id, client_id, phone, stage, role_answer, athlete_age, age_group,
              service_interest, lead_page_url, completed_at, metadata
-      from public.bot_conversation_states
+      from ${botDbSchema}.bot_conversation_states
       where bot_instance_id = $1
         and metadata->'gustavo'->>'pending' = 'true'
         and nullif(metadata->'gustavo'->>'dueAt', '')::timestamptz <= now()
@@ -2882,7 +2923,7 @@ export async function fetchPendingCareerMeetingGroupStates(limit = 20): Promise<
       `
         select id, client_id, phone, stage, role_answer, athlete_age, age_group,
                service_interest, lead_page_url, completed_at, metadata
-        from public.bot_conversation_states
+        from ${botDbSchema}.bot_conversation_states
         where bot_instance_id = $2
           and stage = 'completed'
           and service_interest = 'plano_carreira'
@@ -2979,7 +3020,7 @@ export async function saveBotConversationState(input: {
   if (database) {
     const { rows } = await database.query<BotConversationState>(
       `
-        insert into public.bot_conversation_states
+        insert into ${botDbSchema}.bot_conversation_states
           (client_id, bot_instance_id, phone, stage, role_answer, athlete_age, age_group, service_interest,
            lead_page_url, completed_at, metadata, last_inbound_at, updated_at)
         values ($1, $11, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, now(), now())
@@ -2998,16 +3039,16 @@ export async function saveBotConversationState(input: {
           last_inbound_at = excluded.last_inbound_at,
           updated_at = now()
         where (
-          public.bot_conversation_states.client_id,
-          public.bot_conversation_states.bot_instance_id,
-          public.bot_conversation_states.stage,
-          public.bot_conversation_states.role_answer,
-          public.bot_conversation_states.athlete_age,
-          public.bot_conversation_states.age_group,
-          public.bot_conversation_states.service_interest,
-          public.bot_conversation_states.lead_page_url,
-          public.bot_conversation_states.completed_at,
-          public.bot_conversation_states.metadata
+          ${botDbSchema}.bot_conversation_states.client_id,
+          ${botDbSchema}.bot_conversation_states.bot_instance_id,
+          ${botDbSchema}.bot_conversation_states.stage,
+          ${botDbSchema}.bot_conversation_states.role_answer,
+          ${botDbSchema}.bot_conversation_states.athlete_age,
+          ${botDbSchema}.bot_conversation_states.age_group,
+          ${botDbSchema}.bot_conversation_states.service_interest,
+          ${botDbSchema}.bot_conversation_states.lead_page_url,
+          ${botDbSchema}.bot_conversation_states.completed_at,
+          ${botDbSchema}.bot_conversation_states.metadata
         ) is distinct from (
           excluded.client_id,
           excluded.bot_instance_id,
@@ -3020,7 +3061,7 @@ export async function saveBotConversationState(input: {
           excluded.completed_at,
           excluded.metadata
         )
-        or public.bot_conversation_states.last_inbound_at < now() - interval '1 minute'
+        or ${botDbSchema}.bot_conversation_states.last_inbound_at < now() - interval '1 minute'
         returning id, client_id, phone, stage, role_answer, athlete_age, age_group,
                   service_interest, lead_page_url, completed_at, metadata
       `,
@@ -3044,7 +3085,7 @@ export async function saveBotConversationState(input: {
       `
         select id, client_id, phone, stage, role_answer, athlete_age, age_group,
                service_interest, lead_page_url, completed_at, metadata
-        from public.bot_conversation_states
+        from ${botDbSchema}.bot_conversation_states
         where phone = $1
         limit 1
       `,
@@ -3088,7 +3129,7 @@ export async function fetchBookedEc10MeetingStarts(isoDate: string): Promise<str
     const { rows } = await database.query<{ starts_at: string }>(
       `
         select metadata #>> '{meeting,startsAt}' as starts_at
-        from public.bot_conversation_states
+        from ${botDbSchema}.bot_conversation_states
         where metadata #>> '{meeting,startsAt}' is not null
           and ((metadata #>> '{meeting,startsAt}')::timestamptz at time zone 'America/Sao_Paulo')::date = $1::date
       `,
@@ -3130,7 +3171,7 @@ export async function fetchFutureEc10MeetingSellerCounts(
         select
           coalesce(metadata #>> '{meetingSellerName}', '') as seller_name,
           count(*)::int as total
-        from public.bot_conversation_states
+        from ${botDbSchema}.bot_conversation_states
         where metadata #>> '{meeting,startsAt}' is not null
           and metadata #>> '{meeting,startsAt}' ~ '^\\d{4}-\\d{2}-\\d{2}'
           and (metadata #>> '{meeting,startsAt}')::timestamptz >= now()
@@ -3215,18 +3256,18 @@ export async function updateClientEc10Profile(input: {
   if (database) {
     await database.query(
       `
-        update public.clients
-        set status = case when status = 'novo' then 'triagem'::public.lead_status else status end,
+        update ${botDbSchema}.clients
+        set status = case when status = 'novo' then 'triagem'::${botDbSchema}.lead_status else status end,
             service_interest = $2,
             lead_score = greatest(coalesce(lead_score, 0), $3),
             tags = (
               select array(
                 select distinct value
-                from unnest(coalesce(public.clients.tags, '{}') || $4::text[]) as tags(value)
+                from unnest(coalesce(${botDbSchema}.clients.tags, '{}') || $4::text[]) as tags(value)
                 where value is not null and value <> ''
               )
             ),
-            notes = trim(both E'\n' from concat_ws(E'\n\n', nullif(public.clients.notes, ''), $5::text)),
+            notes = trim(both E'\n' from concat_ws(E'\n\n', nullif(${botDbSchema}.clients.notes, ''), $5::text)),
             updated_at = now()
         where id = $1
       `,
@@ -3274,7 +3315,7 @@ export async function updateClientFoundationStatus(input: {
 
   if (database) {
     await database.query(
-      `update public.clients
+      `update ${botDbSchema}.clients
        set tags = array(select distinct value from unnest(coalesce(tags, '{}'::text[]) || $2::text[]) as values(value)),
            attribution_metadata = coalesce(attribution_metadata, '{}'::jsonb) || $3::jsonb,
            notes = trim(both E'\n' from concat_ws(E'\n\n', nullif(notes, ''), $4)),
@@ -3318,17 +3359,17 @@ export async function assignClientToSellerByName(clientId: string, sellerName: s
       `
         with seller as (
           select id
-          from public.sellers
+          from ${botDbSchema}.sellers
           where lower(name) = lower($2)
             and active = true
           order by created_at asc
           limit 1
         )
-        update public.clients
+        update ${botDbSchema}.clients
         set assigned_seller_id = seller.id,
             updated_at = now()
         from seller
-        where public.clients.id = $1
+        where ${botDbSchema}.clients.id = $1
       `,
       [clientId, sellerName]
     );

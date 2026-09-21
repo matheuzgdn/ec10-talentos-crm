@@ -96,6 +96,7 @@ import {
   appendClientTags,
   cancelQueuedFollowUpMessages,
   cancelQueuedMeetingMessages,
+  checkBotPersistenceHealth,
   countRecentOutboundChatMessages,
   fetchActiveBotRules,
   fetchQueuedOutboundMessages,
@@ -195,6 +196,10 @@ let processingOutboundQueue = false;
 let processingCareerGroupRepair = false;
 let processingPollRecovery = false;
 let processingGustavoRecovery = false;
+let processingInboundRecovery = false;
+let startupInboundRecoveryPending = true;
+let lastInboundPersistenceFailureAt = 0;
+let lastInboundRecoveryAt = 0;
 const pollRecoveryCheckedAt = new Map<string, number>();
 let lastReadyMaintenanceAt = 0;
 let aiFallbackUsage = { day: "", count: 0 };
@@ -1508,7 +1513,9 @@ async function readBotRuntimeControl(): Promise<BotRuntimeControl> {
     manualSafeModeUntilMs,
     outboundQueuePausedUntilMs
   };
-  botRuntimeControlCache = { expiresAt: now + 10_000, value };
+  // Runtime controls are operational switches, not per-message data. A longer
+  // cache avoids thousands of idle reads without delaying an emergency pause.
+  botRuntimeControlCache = { expiresAt: now + 60_000, value };
   return value;
 }
 
@@ -6373,9 +6380,13 @@ function startStatusServer() {
     }
 
     if (url.pathname === "/health") {
-      sendJson(response, 200, {
-        ok: true,
-        status: currentBotStatus,
+      const persistence = await checkBotPersistenceHealth();
+      const status = persistence.ok ? currentBotStatus : "degraded";
+      sendJson(response, persistence.ok ? 200 : 503, {
+        ok: persistence.ok,
+        status,
+        transportStatus: currentBotStatus,
+        persistence,
         updatedAt: new Date().toISOString(),
         botInstanceId: config.BOT_INSTANCE_ID
       });
@@ -6725,6 +6736,87 @@ async function main() {
   };
   client.on('vote_update', (vote: any) => { void handlePollVote(vote); });
 
+  const recoverMissedInboundMessages = async () => {
+    if (processingInboundRecovery || !isCurrentWhatsAppClient(client) || !whatsappReady || !isWhatsAppConnected()) return;
+    const needsRecovery = startupInboundRecoveryPending || lastInboundPersistenceFailureAt > lastInboundRecoveryAt;
+    if (!needsRecovery) return;
+    const persistence = await checkBotPersistenceHealth(true);
+    if (!persistence.ok) return;
+
+    processingInboundRecovery = true;
+    try {
+      const cutoffSeconds = Math.floor((Date.now() - 24 * 60 * 60_000) / 1000);
+      const chats = (await client.getChats())
+        .filter((chat: any) => !chat?.isGroup && Number(chat?.timestamp ?? 0) >= cutoffSeconds)
+        .sort((left: any, right: any) => Number(right?.timestamp ?? 0) - Number(left?.timestamp ?? 0))
+        .slice(0, 60);
+      let recoveredMessages = 0;
+      let recoveredConversations = 0;
+
+      for (const chat of chats) {
+        const messages = (await chat.fetchMessages({ limit: 40 }).catch(() => []))
+          .filter((item: any) => !item?.fromMe && Number(item?.timestamp ?? 0) >= cutoffSeconds)
+          .sort((left: any, right: any) => Number(left?.timestamp ?? 0) - Number(right?.timestamp ?? 0));
+        const recovered: Array<{ body: string; messageId: string; mediaType: string; chatId: string; state: ClientAutomationState }> = [];
+
+        for (const message of messages) {
+          if (String(message?.from ?? '').includes('status@broadcast')) continue;
+          if (!String(message?.body ?? '').trim() && !message?.hasMedia) continue;
+          const chatId = String(message?.from ?? chat?.id?._serialized ?? '');
+          if (!chatId) continue;
+          const resolvedPhone = await resolveInboundChatId(client, chatId);
+          if (await findActiveBotLabWhatsappTester(resolvedPhone)) continue;
+          const mediaType = message.hasMedia ? normalizeWhatsAppMediaType(message.type) : 'text';
+          const messageId = repairWhatsAppMessageId(message) ?? message?.id?.id ?? '';
+          const body = message.hasMedia
+            ? await resolveMessageBody(client, message, mediaType, null)
+            : String(message.body ?? '').trim();
+          if (!body) continue;
+          const state = await upsertInboundMessage({
+            phone: resolvedPhone,
+            name: readMessageContactName(message),
+            body,
+            mediaType,
+            whatsappMessageId: messageId,
+          });
+          if (state) recovered.push({ body, messageId, mediaType, chatId, state });
+        }
+
+        if (!recovered.length) continue;
+        const latest = recovered.at(-1)!;
+        const combinedBody = recovered.map((item) => item.body).join('\n').slice(0, 5000);
+        await withConversationLock(latest.state.phone, async () => {
+          const currentState = await getClientAutomationStateById(latest.state.id) ?? latest.state;
+          if (!shouldRunWhatsAppAutomation(currentState)) {
+            await recordAutomationSuppressed(currentState, 'inbound_recovery');
+            return;
+          }
+          if (currentState.bot_paused) return;
+          await handleGustavoPrimaryRoute(
+            client,
+            latest.chatId,
+            currentState,
+            combinedBody,
+            latest.mediaType,
+            latest.messageId,
+          );
+        });
+        recoveredMessages += recovered.length;
+        recoveredConversations += 1;
+      }
+
+      startupInboundRecoveryPending = false;
+      lastInboundRecoveryAt = Date.now();
+      if (recoveredMessages) {
+        console.log('Recovered missed WhatsApp inbound messages', { recoveredMessages, recoveredConversations });
+      }
+    } catch (error) {
+      console.error('Failed to recover missed WhatsApp inbound messages', error instanceof Error ? error.message : String(error));
+    } finally {
+      processingInboundRecovery = false;
+    }
+  };
+
   client.on("message", async (message: any) => {
     try {
       if (!isCurrentWhatsAppClient(client)) return;
@@ -6824,11 +6916,15 @@ async function main() {
         });
       }
     } catch (error) {
+      lastInboundPersistenceFailureAt = Date.now();
       console.error("Failed to persist inbound message", error);
     }
   });
 
   await client.initialize();
+
+  setTimeout(() => { void recoverMissedInboundMessages(); }, 8_000).unref();
+  setInterval(() => { void recoverMissedInboundMessages(); }, 60_000);
 
   setInterval(async () => {
     if (processingPollRecovery || !isCurrentWhatsAppClient(client) || !whatsappReady || currentBotStatus!=='ready' || !isWhatsAppConnected()) return;
@@ -6849,7 +6945,7 @@ async function main() {
       }
     } catch (error) { console.error('Failed to recover pending poll votes',error); }
     finally { processingPollRecovery=false; }
-  }, 15_000);
+  }, 60_000);
 
   setInterval(async () => {
     if(processingGustavoRecovery||!isCurrentWhatsAppClient(client)||!whatsappReady||currentBotStatus!=="ready"||!isWhatsAppConnected())return;
@@ -6864,7 +6960,7 @@ async function main() {
     } finally {
       processingGustavoRecovery=false;
     }
-  },3_000);
+  },15_000);
 
   setInterval(async () => {
     if (processingOutboundQueue) return;
