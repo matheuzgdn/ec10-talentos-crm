@@ -15,7 +15,7 @@ class AIUnavailableError(RuntimeError):
 
 
 class GeminiSDR:
-    def __init__(self, api_key: str, model: str, secondary_model: str = "gemini-3.5-flash-lite",
+    def __init__(self, api_key: str, model: str, secondary_model: str = "gemini-2.5-flash-lite",
                  thinking_level: str = "low", timeout_seconds: float = 5):
         self.client = GeminiClient(api_key, thinking_level)
         self.models = list(dict.fromkeys([model, secondary_model]))

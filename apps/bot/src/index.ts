@@ -4732,7 +4732,19 @@ async function handleGustavoPrimaryRoute(
   sourceMessageId:string|null=null,
 ) {
   if(config.GUSTAVO_V2_ORACLE_URL&&body?.trim()) {
-    return handleGustavoV2Oracle(client,chatId,clientState,body,mediaType,sourceMessageId);
+    try {
+      return await handleGustavoV2Oracle(client,chatId,clientState,body,mediaType,sourceMessageId);
+    } catch (error) {
+      await appendClientTags(clientState.id,["ia_rota_reserva_acionada"]);
+      await recordTrafficEvent({
+        clientId:clientState.id,phone:clientState.phone,eventType:"gustavo_v2_ai_failover_started",
+        channel:"whatsapp",platform:"multi_provider",serviceInterest:clientState.service_interest,
+        metadata:{primary:"gustavo_v2_oracle",fallback:"ec10_ai_multi_provider",
+          error:getErrorMessage(error).slice(0,160)},
+      }).catch(()=>undefined);
+      return withSdrCustomerTurn(clientState.id,clientState.phone,()=>
+        handleEc10AiConversation(client,chatId,clientState,body,mediaType));
+    }
   }
   const state=await getBotConversationState(clientState.phone);
   if(state&&['awaiting_meeting_date','awaiting_meeting_time','awaiting_booking_completion'].includes(state.stage)) {
@@ -4758,7 +4770,7 @@ async function requestGustavoV2Oracle(clientState:ClientAutomationState,body:str
     .digest("hex");
   const messageId=(sourceMessageId?.trim()||`oracle:${stableFallback}`).slice(0,300);
   let lastError:unknown;
-  for(let attempt=0;attempt<2;attempt+=1) {
+  for(let attempt=0;attempt<1;attempt+=1) {
     const controller=new AbortController();
     const timeout=setTimeout(()=>controller.abort(),config.GUSTAVO_V2_ORACLE_TIMEOUT_MS);
     try {
@@ -4783,7 +4795,6 @@ async function requestGustavoV2Oracle(clientState:ClientAutomationState,body:str
       return result;
     }catch(error){
       lastError=error;
-      if(attempt===0)await naturalPause(250,500);
     }finally{clearTimeout(timeout);}
   }
   throw lastError instanceof Error?lastError:new Error("gustavo_v2_unavailable");
@@ -4826,9 +4837,19 @@ async function handleGustavoV2Oracle(
       const audio=gustavoCareerAudios(result.athlete_age).at(-1);
       if(audio) {
         await naturalPause(900,1600);
-        const audioSent=await sendBotAudio(client,chatId,clientState.id,audio.audioPath);
-        if(!audioSent)throw new Error("gustavo_v2_audio_not_delivered");
-        await confirmGustavoV2OracleAudioDelivery(clientState.phone,result.audio_key);
+        const audioSent=await sendBotAudio(client,chatId,clientState.id,audio.audioPath).catch(()=>false);
+        if(audioSent) {
+          await confirmGustavoV2OracleAudioDelivery(clientState.phone,result.audio_key);
+        } else {
+          await scheduleOutboundAudioMessage({
+            clientId:clientState.id,phone:clientState.phone,mediaPath:audio.audioPath,
+            scheduledAt:new Date(Date.now()+3000).toISOString(),
+          });
+          await recordTrafficEvent({
+            clientId:clientState.id,phone:clientState.phone,eventType:"gustavo_v2_audio_recovery_queued",
+            channel:"whatsapp",platform:"whatsapp",metadata:{audioKey:result.audio_key},
+          }).catch(()=>undefined);
+        }
       }
     }
     if(result.poll?.question&&Array.isArray(result.poll.options)&&result.poll.options.length>=2) {
@@ -4837,7 +4858,17 @@ async function handleGustavoV2Oracle(
         client,chatId,clientId:clientState.id,question:result.poll.question,
         options:result.poll.options,delayRange:[250,550],
       });
-      if(!pollSent)throw new Error("gustavo_v2_booking_poll_not_delivered");
+      if(!pollSent) {
+        await scheduleOutboundPollMessage({
+          clientId:clientState.id,phone:clientState.phone,
+          body:buildPollFallbackBody(result.poll.question,result.poll.options),
+          scheduledAt:new Date(Date.now()+3000).toISOString(),
+        });
+        await recordTrafficEvent({
+          clientId:clientState.id,phone:clientState.phone,eventType:"gustavo_v2_poll_recovery_queued",
+          channel:"whatsapp",platform:"whatsapp",metadata:{pollKind:result.poll.kind},
+        }).catch(()=>undefined);
+      }
     }
     if(result.booking) {
       await recordTrafficEvent({

@@ -45,7 +45,8 @@ def main() -> None:
     values = {
         "DATABASE_URL": database_url,
         "GEMINI_API_KEY": gemini_key,
-        "GEMINI_MODEL": "gemini-2.5-flash",
+        "GEMINI_MODEL": "gemini-2.5-flash-lite",
+        "GEMINI_SECONDARY_MODEL": "gemini-2.5-flash-lite",
         "META_GRAPH_VERSION": "v25.0",
         "META_PHONE_NUMBER_ID": "",
         "META_WABA_ID": "",

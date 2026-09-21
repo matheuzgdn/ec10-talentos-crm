@@ -11,8 +11,8 @@ class Settings(BaseSettings):
 
     database_url: str
     gemini_api_key: str
-    gemini_model: str = "gemini-3.5-flash"
-    gemini_secondary_model: str = "gemini-3.5-flash-lite"
+    gemini_model: str = "gemini-2.5-flash-lite"
+    gemini_secondary_model: str = "gemini-2.5-flash-lite"
     gemini_thinking_level: Literal["minimal", "low", "medium", "high"] = "low"
     gemini_timeout_seconds: float = 5
     meta_graph_version: str = "v25.0"

@@ -297,7 +297,7 @@ async function optimizationHistory() {
   const { rows } = await pool.query(
     `
       select created_at, metadata
-      from public.traffic_events
+      from whatsapp_bot.traffic_events
       where event_type in ('eurocamp_cloud_optimizer_action', 'eurocamp_cloud_guardrail_pause')
         and created_at >= now() - interval '96 hours'
       order by created_at desc
@@ -332,8 +332,8 @@ async function crmLeadSummary(since) {
         coalesce(te.metadata->>'utmContent', c.utm_content) as utm_content,
         coalesce(te.metadata->>'utmCampaign', c.utm_campaign) as utm_campaign,
         coalesce(te.metadata, c.attribution_metadata, '{}'::jsonb) as attribution_metadata
-      from public.traffic_events te
-      left join public.clients c on c.id = te.client_id
+      from whatsapp_bot.traffic_events te
+      left join whatsapp_bot.clients c on c.id = te.client_id
       where te.created_at >= (($1::date)::timestamp at time zone $2)
         and te.event_type in (
           'eurocamp_waitlist_submitted',
@@ -386,7 +386,7 @@ async function crmQualitySignals(since) {
         coalesce(metadata->>'sourceCreative', metadata->>'source_creative', 'sem_criativo') as creative,
         count(*)::int as qualified,
         avg(coalesce(quality_score, 0))::numeric as average_score
-      from public.traffic_events
+      from whatsapp_bot.traffic_events
       where created_at >= (($1::date)::timestamp at time zone $2)
         and event_type = 'QualifiedLead'
         and platform = 'meta_ads'
@@ -530,7 +530,7 @@ async function recordRun(summary) {
     : "eurocamp_cloud_monitor_run";
   await pool.query(
     `
-      insert into public.traffic_events
+      insert into whatsapp_bot.traffic_events
         (event_type, channel, platform, service_interest, quality_score, value,
          campaign_id, campaign_name, adset_id, metadata)
       values
@@ -949,7 +949,7 @@ main()
     console.error(JSON.stringify(failure));
     if (!DRY_RUN) {
       await pool.query(
-        `insert into public.traffic_events
+        `insert into whatsapp_bot.traffic_events
           (event_type, channel, platform, service_interest, quality_score, metadata)
          values ('eurocamp_cloud_optimizer_error', 'cloud_monitor', 'meta_ads', 'eurocamp', 20, $1::jsonb)`,
         [JSON.stringify(failure)]

@@ -20,6 +20,13 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except ImportError:  # REST continua como rota de contingência.
+    psycopg = None
+    dict_row = None
+
 
 ROOT = Path(__file__).resolve().parents[1]
 ENV_FILE = ROOT / ".env"
@@ -48,8 +55,15 @@ def load_env(path: Path) -> None:
 load_env(ENV_FILE)
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SERVICE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
-if not SUPABASE_URL or not SERVICE_KEY:
-    raise SystemExit("Configuração Supabase ausente")
+DATABASE_URL = os.getenv("SUPABASE_DB_URL", "") or os.getenv("DATABASE_URL", "")
+DATABASE = None
+if DATABASE_URL and psycopg:
+    try:
+        DATABASE = psycopg.connect(DATABASE_URL, connect_timeout=10, autocommit=True, row_factory=dict_row)
+    except Exception:  # REST pode assumir se a conexão SQL estiver temporariamente indisponível.
+        DATABASE = None
+if DATABASE is None and (not SUPABASE_URL or not SERVICE_KEY):
+    raise SystemExit("Configuração de banco ausente")
 
 
 def utcnow() -> datetime:
@@ -60,9 +74,11 @@ def iso(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def parse_time(value: str | None) -> datetime | None:
+def parse_time(value: str | datetime | None) -> datetime | None:
     if not value:
         return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
     try:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
@@ -102,6 +118,15 @@ def bot_health() -> dict:
 
 
 def latest_message(client_id: str, direction: str, since: str):
+    if DATABASE is not None:
+        with DATABASE.cursor() as cursor:
+            cursor.execute(
+                """select body,created_at from whatsapp_bot.messages
+                   where client_id=%s and direction=%s and created_at >= %s::timestamptz
+                   order by created_at desc limit 1""",
+                (client_id, direction, since),
+            )
+            return cursor.fetchone()
     rows = rest("messages", {
         "select": "body,created_at",
         "client_id": f"eq.{client_id}",
@@ -114,6 +139,16 @@ def latest_message(client_id: str, direction: str, since: str):
 
 
 def recent_messages(client_id: str, direction: str, since: str, limit: int = 12):
+    if DATABASE is not None:
+        with DATABASE.cursor() as cursor:
+            cursor.execute(
+                """select body,media_type,created_at,whatsapp_message_id
+                   from whatsapp_bot.messages
+                   where client_id=%s and direction=%s and created_at >= %s::timestamptz
+                   order by created_at desc limit %s""",
+                (client_id, direction, since, limit),
+            )
+            return list(cursor.fetchall())
     return rest("messages", {
         "select": "body,media_type,created_at,whatsapp_message_id",
         "client_id": f"eq.{client_id}",
@@ -174,6 +209,72 @@ def unsafe_outbound_reasons(value: str | None) -> list[str]:
     return reasons
 
 
+def active_clients(since: str):
+    if DATABASE is not None:
+        with DATABASE.cursor() as cursor:
+            cursor.execute(
+                """select id::text,phone,bot_instance_id,bot_paused,tags,last_message_at
+                   from whatsapp_bot.clients
+                   where bot_instance_id='main' and bot_paused=false
+                     and last_message_at >= %s::timestamptz
+                   order by last_message_at desc limit 100""",
+                (since,),
+            )
+            return list(cursor.fetchall())
+    return rest("clients", {
+        "select": "id,phone,bot_instance_id,bot_paused,tags,last_message_at",
+        "bot_instance_id": "eq.main",
+        "bot_paused": "is.false",
+        "last_message_at": f"gte.{since}",
+        "order": "last_message_at.desc",
+        "limit": "100",
+    })
+
+
+def conversation_state(client_id: str):
+    if DATABASE is not None:
+        with DATABASE.cursor() as cursor:
+            cursor.execute(
+                """select id::text,stage,metadata from whatsapp_bot.bot_conversation_states
+                   where client_id=%s order by updated_at desc limit 1""",
+                (client_id,),
+            )
+            return cursor.fetchone()
+    states = rest("bot_conversation_states", {
+        "select": "id,stage,metadata", "client_id": f"eq.{client_id}", "limit": "1",
+    })
+    return states[0] if states else None
+
+
+def save_recovery_state(client: dict, state: dict | None, metadata: dict, inbound_at) -> None:
+    if DATABASE is not None:
+        with DATABASE.cursor() as cursor:
+            if state:
+                cursor.execute(
+                    """update whatsapp_bot.bot_conversation_states
+                       set metadata=%s::jsonb,last_inbound_at=%s::timestamptz,updated_at=now()
+                       where id=%s::uuid""",
+                    (json.dumps(metadata, ensure_ascii=False), inbound_at, state["id"]),
+                )
+            else:
+                cursor.execute(
+                    """insert into whatsapp_bot.bot_conversation_states
+                       (client_id,bot_instance_id,phone,stage,last_inbound_at,metadata)
+                       values (%s::uuid,'main',%s,'awaiting_interest',%s::timestamptz,%s::jsonb)""",
+                    (client["id"], client["phone"], inbound_at, json.dumps(metadata, ensure_ascii=False)),
+                )
+        return
+    if state:
+        rest("bot_conversation_states", {"id": f"eq.{state['id']}"}, method="PATCH", payload={
+            "metadata": metadata, "last_inbound_at": str(inbound_at),
+        })
+    else:
+        rest("bot_conversation_states", method="POST", payload={
+            "client_id": client["id"], "bot_instance_id": "main", "phone": client["phone"],
+            "stage": "awaiting_interest", "last_inbound_at": str(inbound_at), "metadata": metadata,
+        })
+
+
 def main() -> int:
     LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
     with LOCK_FILE.open("w", encoding="utf-8") as lock:
@@ -206,14 +307,7 @@ def main() -> int:
             monitor_since = now
             guardian_state["monitorSince"] = iso(now)
         since = iso(now - timedelta(hours=LOOKBACK_HOURS))
-        clients = rest("clients", {
-            "select": "id,phone,bot_instance_id,bot_paused,tags,last_message_at",
-            "bot_instance_id": "eq.main",
-            "bot_paused": "is.false",
-            "last_message_at": f"gte.{since}",
-            "order": "last_message_at.desc",
-            "limit": "100",
-        })
+        clients = active_clients(since)
 
         recovered = 0
         pending = 0
@@ -270,12 +364,7 @@ def main() -> int:
             if outbound_at and outbound_at >= inbound_at:
                 continue
 
-            states = rest("bot_conversation_states", {
-                "select": "id,stage,metadata",
-                "client_id": f"eq.{client['id']}",
-                "limit": "1",
-            })
-            state = states[0] if states else None
+            state = conversation_state(client["id"])
             metadata = dict((state or {}).get("metadata") or {})
             gustavo = dict(metadata.get("gustavo") or {})
             if gustavo.get("pending") is True:
@@ -315,20 +404,7 @@ def main() -> int:
                 "guardianLastCheckAt": timestamp,
             }
 
-            if state:
-                rest("bot_conversation_states", {"id": f"eq.{state['id']}"}, method="PATCH", payload={
-                    "metadata": next_metadata,
-                    "last_inbound_at": inbound["created_at"],
-                })
-            else:
-                rest("bot_conversation_states", method="POST", payload={
-                    "client_id": client["id"],
-                    "bot_instance_id": "main",
-                    "phone": client["phone"],
-                    "stage": "awaiting_interest",
-                    "last_inbound_at": inbound["created_at"],
-                    "metadata": next_metadata,
-                })
+            save_recovery_state(client, state, next_metadata, inbound["created_at"])
             recovered += 1
 
         consecutive_stale = int(guardian_state.get("consecutiveStalePending") or 0) + 1 if stale_pending else 0

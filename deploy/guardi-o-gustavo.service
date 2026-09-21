@@ -7,5 +7,6 @@ Wants=network-online.target
 Type=oneshot
 User=opc
 WorkingDirectory=/home/opc/cliente-whatsapp-crm
+Environment=PYTHONPATH=/home/opc/ec10-gustavo-v2/.venv/lib/python3.9/site-packages
 ExecStart=/usr/bin/python3 scripts/guardi_o_gustavo.py
 SuccessExitStatus=3
