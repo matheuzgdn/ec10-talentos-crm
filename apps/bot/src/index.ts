@@ -157,6 +157,7 @@ import {
 const { Client, LocalAuth, MessageMedia, Poll } = pkg;
 const projectRoot = path.resolve(import.meta.dirname, "../../..");
 const conversationLocks = new Map<string, Promise<void>>();
+const recentBotOutboundMessageIds = new Map<string, number>();
 const sdrOutboundContext=new AsyncLocalStorage<{clientId:string;turn:string;maxOutbound:number;learning?:{stage:string;age:number|null;role:string;message:string|null};learningUsed?:boolean}>();
 function botPhoneAliases(value:string|null|undefined) {
   const phone=normalizePhone(value||'',config.BOT_DEFAULT_COUNTRY_CODE);
@@ -2002,7 +2003,16 @@ async function sendWhatsAppWithRetry(task: () => Promise<any>, attempts = 1): Pr
   let lastError: unknown = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      return await task();
+      const sent = await task();
+      const messageId = getWhatsAppMessageId(sent);
+      if (messageId) {
+        const now = Date.now();
+        recentBotOutboundMessageIds.set(messageId, now);
+        for (const [id, createdAt] of recentBotOutboundMessageIds) {
+          if (createdAt < now - 10 * 60_000) recentBotOutboundMessageIds.delete(id);
+        }
+      }
+      return sent;
     } catch (error) {
       lastError = error;
       // WhatsApp Web timeouts are ambiguous: the message may have been sent even
@@ -6781,6 +6791,7 @@ async function main() {
     const messageId = repairWhatsAppMessageId(message) ?? message?.id?.id ?? null;
     setTimeout(() => {
       void (async () => {
+        if (messageId && recentBotOutboundMessageIds.has(messageId)) return;
         if (await isRecordedBotOutboundMessage(messageId)) return;
         const phone = await resolveInboundChatId(client, target);
         const paused = await pauseClientAutomationByPhone({
