@@ -958,6 +958,21 @@ export function App() {
   }, [session, seller?.active, viewMode, libertacademyDestination]);
 
   useEffect(() => {
+    if (!session || !seller?.active || viewMode !== "bot") return;
+    const refreshWhatsAppConnection = () => {
+      if (document.visibilityState !== "visible") return;
+      void loadBotStatus();
+    };
+    refreshWhatsAppConnection();
+    const timer = window.setInterval(refreshWhatsAppConnection, 10_000);
+    document.addEventListener("visibilitychange", refreshWhatsAppConnection);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshWhatsAppConnection);
+    };
+  }, [session, seller?.active, viewMode]);
+
+  useEffect(() => {
     if (selectedClient && !conversationMinimized) loadMessages(selectedClient.id);
   }, [selectedClient?.id, conversationMinimized]);
 
