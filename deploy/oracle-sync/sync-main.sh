@@ -100,18 +100,31 @@ write_status "restarting" "$target_commit" "bot_restart"
 sudo -n systemctl restart "$BOT_SERVICE"
 
 healthy=false
+transport_ready_streak=0
+last_health_json=""
 for _ in $(seq 1 36); do
   if sudo -n systemctl is-active --quiet "$BOT_SERVICE"; then
     health_json="$(curl -fsS --max-time 4 http://127.0.0.1:3001/health 2>/dev/null || true)"
+    last_health_json="$health_json"
     if grep -Eq '"status":"ready"' <<<"$health_json"; then
-      healthy=true
-      break
+      transport_ready_streak=$((transport_ready_streak + 1))
+      if (( transport_ready_streak >= 3 )); then
+        healthy=true
+        break
+      fi
+    else
+      transport_ready_streak=0
     fi
   fi
   sleep 5
 done
 
 if [[ "$healthy" != "true" ]]; then
+  if grep -Eq '"ok":true' <<<"$last_health_json" && grep -Eq '"status":"(waiting_qr_scan|authenticated|loading|reconnecting|disconnected)"' <<<"$last_health_json"; then
+    printf '%s\n' "$target_commit" >"$STATE_FILE"
+    write_status "attention" "$target_commit" "deployed_whatsapp_reconnect_required"
+    exit 0
+  fi
   rollback_candidate="$DEPLOY_ROOT/90-github-rollback-$$.conf"
   printf '[Service]\nWorkingDirectory=%s\n' "$previous_target" >"$rollback_candidate"
   sudo -n install -m 0644 "$rollback_candidate" "$SERVICE_OVERRIDE_FILE"

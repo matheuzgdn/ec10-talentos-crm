@@ -290,14 +290,22 @@ def main() -> int:
         if health.get("status") != "ready":
             failures = int(guardian_state.get("consecutiveHealthFailures") or 0) + 1
             guardian_state["consecutiveHealthFailures"] = failures
-            restarted = failures >= 3 and maybe_restart_bot(guardian_state, "health_not_ready", now)
+            bot_status = str(health.get("status") or "unknown")
+            # QR/auth states require a human scan. Restarting here invalidates the
+            # visible QR and can keep the commercial number offline indefinitely.
+            manual_reconnect = bot_status in {"waiting_qr_scan", "auth_failure"}
+            restartable = bot_status in {"unreachable", "degraded", "not_ready"}
+            restarted = restartable and failures >= 3 and maybe_restart_bot(
+                guardian_state, "health_not_ready", now
+            )
             save_guardian_state(guardian_state)
             print(json.dumps({
                 "status": "attention",
                 "reason": "bot_not_ready",
-                "botStatus": health.get("status"),
+                "botStatus": bot_status,
                 "consecutiveFailures": failures,
                 "restartTriggered": restarted,
+                "manualReconnectRequired": manual_reconnect,
             }))
             return 2
 
@@ -372,6 +380,29 @@ def main() -> int:
                 due_at = parse_time(gustavo.get("dueAt"))
                 if due_at and (now - due_at).total_seconds() >= 300:
                     stale_pending += 1
+                    count = int(gustavo.get("guardianRecoveryCount") or 0)
+                    if count < MAX_RECOVERIES:
+                        timestamp = iso(now)
+                        millis = int(now.timestamp() * 1000)
+                        next_metadata = {
+                            **metadata,
+                            "gustavo": {
+                                **gustavo,
+                                "pending": True,
+                                "dueAt": timestamp,
+                                "batchStartedAt": millis,
+                                "contentStartedAt": millis,
+                                "retryCount": 0,
+                                "guardianRecoveryCount": count + 1,
+                                "guardianRecoveredAt": timestamp,
+                            },
+                            "sdrActiveEngine": "gustavo",
+                            "guardianLastCheckAt": timestamp,
+                        }
+                        save_recovery_state(client, state, next_metadata, inbound["created_at"])
+                        recovered += 1
+                    else:
+                        attention += 1
                 continue
             if gustavo.get("handoff") is True or gustavo.get("disqualified") is True:
                 continue
@@ -409,7 +440,9 @@ def main() -> int:
 
         consecutive_stale = int(guardian_state.get("consecutiveStalePending") or 0) + 1 if stale_pending else 0
         guardian_state["consecutiveStalePending"] = consecutive_stale
-        restart_triggered = consecutive_stale >= 2 and maybe_restart_bot(guardian_state, "stale_pending_conversations", now)
+        # Never restart a connected WhatsApp session for an application-level
+        # backlog. The stale states were safely re-queued above instead.
+        restart_triggered = False
         guardian_state["lastCheckAt"] = iso(now)
         guardian_state["lastSummary"] = {
             "checked": len(clients),

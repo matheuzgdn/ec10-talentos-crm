@@ -937,7 +937,7 @@ async function callGroqText(prompt: string, maxOutputTokens: number) {
         const message = await response.text().catch(() => "");
         if (response.status === 400 && /failed_generation|validate json|json_validate_failed/i.test(message)) {
           response = await request(model, false);
-        } else if ([429, 500, 502, 503, 504].includes(response.status) && model !== models.at(-1)) {
+        } else if ([404, 429, 500, 502, 503, 504].includes(response.status) && model !== models.at(-1)) {
           lastError = `Groq ${model} unavailable (${response.status}); trying fallback.`;
           console.warn(lastError);
           continue;
@@ -947,7 +947,7 @@ async function callGroqText(prompt: string, maxOutputTokens: number) {
       }
       if (!response.ok) {
         const message = await response.text().catch(() => "");
-        if ([429, 500, 502, 503, 504].includes(response.status) && model !== models.at(-1)) {
+        if ([404, 429, 500, 502, 503, 504].includes(response.status) && model !== models.at(-1)) {
           lastError = `Groq ${model} retry unavailable (${response.status}); trying fallback.`;
           console.warn(lastError);
           continue;
