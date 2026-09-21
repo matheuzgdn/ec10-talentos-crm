@@ -50,7 +50,14 @@ if [[ -n "$deployed_commit" ]] && git --git-dir="$MIRROR_DIR" cat-file -e "$depl
   changed_files="$(git --git-dir="$MIRROR_DIR" diff --name-only "$deployed_commit" "$target_commit")"
   if ! grep -Eq '^(apps/bot/|packages/shared/|media/|package(-lock)?\.json$|scripts/patch-whatsapp-web\.cjs$)' <<<"$changed_files"; then
     printf '%s\n' "$target_commit" >"$STATE_FILE"
-    write_status "ready" "$target_commit" "no_bot_runtime_change"
+    current_health="$(curl -fsS --max-time 4 http://127.0.0.1:3001/health 2>/dev/null || true)"
+    if grep -Eq '"status":"ready"' <<<"$current_health"; then
+      write_status "ready" "$target_commit" "no_bot_runtime_change"
+    elif grep -Eq '"ok":true' <<<"$current_health"; then
+      write_status "attention" "$target_commit" "no_bot_runtime_change_whatsapp_reconnect_required"
+    else
+      write_status "attention" "$target_commit" "no_bot_runtime_change_health_unavailable"
+    fi
     exit 0
   fi
 fi

@@ -69,6 +69,7 @@ assert.match(aiResilienceSource, /GROQ_MODEL=openai\/gpt-oss-120b/);
 assert.match(deploySyncSource, /transport_ready_streak >= 3/);
 assert.match(deploySyncSource, /deployed_whatsapp_reconnect_required/);
 assert.match(deploySyncSource, /existing_deployment_whatsapp_reconnect_required/);
+assert.match(deploySyncSource, /no_bot_runtime_change_whatsapp_reconnect_required/);
 assert.match(guardianSource, /manualReconnectRequired/);
 assert.match(guardianSource, /restartable = bot_status in \{"unreachable", "degraded", "not_ready"\}/);
 assert.doesNotMatch(guardianSource, /maybe_restart_bot\(guardian_state, "stale_pending_conversations"/);
@@ -101,7 +102,7 @@ assert.doesNotMatch(
 assert.match(whatsappPatchSource, /delete message\.__x_id/);
 
 console.log(JSON.stringify({
-  passed: positiveReplies.length + 39,
-  total: positiveReplies.length + 39,
+  passed: positiveReplies.length + 40,
+  total: positiveReplies.length + 40,
   noWhatsAppSent: true,
 }, null, 2));
