@@ -6,7 +6,7 @@
 - O PostgreSQL desse mesmo projeto continua acessível por conexão direta. Não houve transferência nem exclusão dos dados de clientes.
 - A cópia de emergência da interface atual está em `https://crm-api.147-15-27-235.nip.io/crm`. Ela **não substitui** o endereço oficial e não deve ser anunciada como CRM completo até a validação dos módulos abaixo.
 - O gateway Oracle usa `ec10-crm-gateway`, `ec10-postgrest` e `caddy`. O guardião roda a cada cinco minutos.
-- Testes realizados: 3 verificações unitárias do gateway, 6 de integração (incluindo RLS e JWT inválido), 7 de login/renovação/logout com uma identidade temporária removida ao fim, e abertura da tela em Chrome sem erro de carregamento.
+- Testes realizados: 3 verificações unitárias do gateway, 6 de integração (incluindo RLS e JWT inválido), 7 de login/renovação/logout com uma identidade temporária removida ao fim, abertura da tela em Chrome sem erro de carregamento e login pela interface com outra identidade temporária. Este último teste chegou corretamente à tela "Organização não disponível", pois a identidade de teste não pertence a nenhuma organização.
 
 ## Cópias de segurança
 
