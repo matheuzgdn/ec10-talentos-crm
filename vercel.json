@@ -22,6 +22,10 @@
       "destination": "/api/messages?whatsapp_onboarding=1"
     },
     {
+      "source": "/api/bot-connect",
+      "destination": "/bot-connect.html"
+    },
+    {
       "source": "/api/(.*)",
       "destination": "/api/$1"
     },

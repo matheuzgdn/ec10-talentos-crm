@@ -1,11 +1,9 @@
-export default async function handler(_request: any, response: any) {
-  response.setHeader("cache-control", "no-store, max-age=0");
-  response.setHeader("content-type", "text/html; charset=utf-8");
-  response.status(200).send(`<!doctype html>
+<!doctype html>
 <html lang="pt-BR">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta http-equiv="cache-control" content="no-store" />
     <title>Conectar WhatsApp EC10</title>
     <style>
       :root{color-scheme:dark;font-family:Inter,system-ui,sans-serif}*{box-sizing:border-box}
@@ -39,5 +37,5 @@ export default async function handler(_request: any, response: any) {
       refreshQr();refreshStatus();setInterval(refreshQr,8000);setInterval(refreshStatus,4000);
     </script>
   </body>
-</html>`);
-}
+</html>
+
