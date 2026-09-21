@@ -1,6 +1,56 @@
 import pg from "pg";
 
 let database: pg.Pool | null = null;
+const routedClients = new WeakSet<pg.PoolClient>();
+
+const ec10OperationalTables = [
+  "bot_conversation_states",
+  "bot_dedupe_locks",
+  "bot_instances",
+  "bot_rules",
+  "bot_runtime",
+  "calls",
+  "clients",
+  "crm_auth_sessions",
+  "crm_auth_users",
+  "ec10_booking_slots",
+  "ec10_bookings",
+  "ec10_bot_booking_links",
+  "ec10_campaign_registrations",
+  "ec10_chat_booking_schedule",
+  "ec10_default_agenda",
+  "ec10_default_agenda_windows",
+  "gustavo_v2_contacts",
+  "gustavo_v2_inbox",
+  "gustavo_v2_outbox",
+  "gustavo_v2_turns",
+  "lead_attribution",
+  "messages",
+  "meta_webhook_events",
+  "outbound_messages",
+  "sellers",
+  "traffic_agent_recommendations",
+  "traffic_campaign_drafts",
+  "traffic_campaign_snapshots",
+  "traffic_events"
+] as const;
+
+const ec10PublicSchemaPattern = new RegExp(
+  `\\bpublic\\.(${ec10OperationalTables.join("|")})\\b`,
+  "g"
+);
+
+export function routeEc10OperationalSql(sql: string) {
+  return sql.replace(ec10PublicSchemaPattern, 'whatsapp_bot.$1');
+}
+
+function routeQueryInput(input: unknown) {
+  if (typeof input === "string") return routeEc10OperationalSql(input);
+  if (input && typeof input === "object" && "text" in input && typeof (input as any).text === "string") {
+    return { ...(input as any), text: routeEc10OperationalSql((input as any).text) };
+  }
+  return input;
+}
 
 function getPool() {
   if (!process.env.SUPABASE_DB_URL) {
@@ -59,13 +109,22 @@ export const pool = {
     params?: any[]
   ): Promise<pg.QueryResult<T>> {
     return retryConnectionLimit(async () => {
-      return getPool().query<T>(text as any, params as any);
+      return getPool().query<T>(routeQueryInput(text) as any, params as any);
     });
   },
 
   async connect(): Promise<pg.PoolClient> {
     return retryConnectionLimit(async () => {
-      return getPool().connect();
+      const client = await getPool().connect();
+      if (!routedClients.has(client)) {
+        const query = client.query.bind(client);
+        client.query = ((...args: any[]) => {
+          args[0] = routeQueryInput(args[0]);
+          return (query as any)(...args);
+        }) as typeof client.query;
+        routedClients.add(client);
+      }
+      return client;
     });
   }
 };
