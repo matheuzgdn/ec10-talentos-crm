@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-2.5-flash-lite"
     gemini_secondary_model: str = "gemini-2.5-flash-lite"
     gemini_thinking_level: Literal["minimal", "low", "medium", "high"] = "low"
-    gemini_timeout_seconds: float = 5
+    gemini_timeout_seconds: float = 7
     meta_graph_version: str = "v25.0"
     meta_phone_number_id: str = ""
     meta_waba_id: str = ""

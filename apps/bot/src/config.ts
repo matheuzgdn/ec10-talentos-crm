@@ -75,6 +75,7 @@ const schema = z.object({
   GEMINI_API_KEY: z.string().optional(),
   GEMINI_MODEL: z.string().default("gemini-2.5-flash-lite"),
   GEMINI_AUDIO_MODEL: z.string().default("gemini-2.5-flash-lite"),
+  GEMINI_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(2000).max(30000).default(6000),
   GEMINI_MAX_AUDIO_BYTES: z.coerce.number().default(8_000_000),
   GUSTAVO_V2_ORACLE_URL: z.string().url().optional(),
   GUSTAVO_V2_ORACLE_TIMEOUT_MS: z.coerce.number().int().min(1000).max(30000).default(12000),

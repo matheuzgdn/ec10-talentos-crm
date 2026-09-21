@@ -47,6 +47,7 @@ def main() -> None:
         "GEMINI_API_KEY": gemini_key,
         "GEMINI_MODEL": "gemini-2.5-flash-lite",
         "GEMINI_SECONDARY_MODEL": "gemini-2.5-flash-lite",
+        "GEMINI_TIMEOUT_SECONDS": "7",
         "META_GRAPH_VERSION": "v25.0",
         "META_PHONE_NUMBER_ID": "",
         "META_WABA_ID": "",

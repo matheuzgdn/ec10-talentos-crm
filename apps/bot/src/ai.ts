@@ -1180,7 +1180,7 @@ async function callGemini(model: string, parts: GeminiPart[], maxOutputTokens: n
   if (!config.GEMINI_API_KEY) return "";
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 18_000);
+  const timeout = setTimeout(() => controller.abort(), config.GEMINI_REQUEST_TIMEOUT_MS);
 
   try {
     const response = await fetch(`${geminiBaseUrl}/${encodeURIComponent(model)}:generateContent`, {
