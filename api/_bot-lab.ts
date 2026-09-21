@@ -29,7 +29,7 @@ async function ensureLabSchema() {
   await pool.query(`
     create table if not exists public.bot_lab_sessions (
       id uuid primary key default gen_random_uuid(),
-      created_by uuid not null references public.sellers(id) on delete cascade,
+      created_by uuid not null references whatsapp_bot.sellers(id) on delete cascade,
       name text not null default 'Nova simulacao',
       status text not null default 'active' check (status in ('active', 'completed', 'archived')),
       current_stage text not null default 'awaiting_age',
@@ -56,7 +56,7 @@ async function ensureLabSchema() {
       id uuid primary key default gen_random_uuid(),
       session_id uuid references public.bot_lab_sessions(id) on delete set null,
       assistant_message_id uuid unique references public.bot_lab_messages(id) on delete set null,
-      reviewed_by uuid not null references public.sellers(id) on delete cascade,
+      reviewed_by uuid not null references whatsapp_bot.sellers(id) on delete cascade,
       stage text not null,
       athlete_age integer,
       speaker_role text,

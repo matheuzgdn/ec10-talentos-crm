@@ -23,7 +23,7 @@ export default async function handler(request: any, response: any) {
 
     const { rows } = await pool.query(
       `
-        update public.sellers
+        update whatsapp_bot.sellers
         set active = $2,
             role = $3,
             approved_at = case when $2 then coalesce(approved_at, now()) else null end,

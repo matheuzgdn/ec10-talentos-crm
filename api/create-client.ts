@@ -511,7 +511,7 @@ async function handlePublicLead(request: any, response: any) {
         `
         with default_seller as (
           select id
-          from public.sellers
+          from whatsapp_bot.sellers
           where active = true
           order by
             case when role = 'admin' then 0 else 1 end,
@@ -519,7 +519,7 @@ async function handlePublicLead(request: any, response: any) {
             created_at asc
           limit 1
         )
-        insert into public.clients (
+        insert into whatsapp_bot.clients (
           phone,
           bot_instance_id,
           name,
@@ -567,29 +567,29 @@ async function handlePublicLead(request: any, response: any) {
         )
         on conflict (phone)
         do update set
-          name = coalesce(nullif(excluded.name, ''), public.clients.name),
-          region = coalesce(excluded.region, public.clients.region),
-          notes = concat_ws(E'\\n\\n', nullif(public.clients.notes, ''), excluded.notes),
+          name = coalesce(nullif(excluded.name, ''), whatsapp_bot.clients.name),
+          region = coalesce(excluded.region, whatsapp_bot.clients.region),
+          notes = concat_ws(E'\\n\\n', nullif(whatsapp_bot.clients.notes, ''), excluded.notes),
           service_interest = excluded.service_interest,
           source = 'site',
-          assigned_seller_id = coalesce(public.clients.assigned_seller_id, excluded.assigned_seller_id),
+          assigned_seller_id = coalesce(whatsapp_bot.clients.assigned_seller_id, excluded.assigned_seller_id),
           tags = array_remove(
             (
               select array_agg(distinct merged_tag.tag)
-              from unnest(coalesce(public.clients.tags, '{}'::text[]) || excluded.tags) as merged_tag(tag)
+              from unnest(coalesce(whatsapp_bot.clients.tags, '{}'::text[]) || excluded.tags) as merged_tag(tag)
             ),
             'aguardando_whatsapp'
           ),
-          lead_score = greatest(coalesce(public.clients.lead_score, 0), excluded.lead_score),
+          lead_score = greatest(coalesce(whatsapp_bot.clients.lead_score, 0), excluded.lead_score),
           traffic_source = excluded.traffic_source,
-          utm_source = coalesce(nullif(excluded.utm_source, ''), public.clients.utm_source),
-          utm_medium = coalesce(nullif(excluded.utm_medium, ''), public.clients.utm_medium),
-          utm_campaign = coalesce(nullif(excluded.utm_campaign, ''), public.clients.utm_campaign),
-          utm_content = coalesce(nullif(excluded.utm_content, ''), public.clients.utm_content),
-          utm_term = coalesce(nullif(excluded.utm_term, ''), public.clients.utm_term),
-          fbclid = coalesce(nullif(excluded.fbclid, ''), public.clients.fbclid),
-          gclid = coalesce(nullif(excluded.gclid, ''), public.clients.gclid),
-          attribution_metadata = coalesce(public.clients.attribution_metadata, '{}'::jsonb) || excluded.attribution_metadata,
+          utm_source = coalesce(nullif(excluded.utm_source, ''), whatsapp_bot.clients.utm_source),
+          utm_medium = coalesce(nullif(excluded.utm_medium, ''), whatsapp_bot.clients.utm_medium),
+          utm_campaign = coalesce(nullif(excluded.utm_campaign, ''), whatsapp_bot.clients.utm_campaign),
+          utm_content = coalesce(nullif(excluded.utm_content, ''), whatsapp_bot.clients.utm_content),
+          utm_term = coalesce(nullif(excluded.utm_term, ''), whatsapp_bot.clients.utm_term),
+          fbclid = coalesce(nullif(excluded.fbclid, ''), whatsapp_bot.clients.fbclid),
+          gclid = coalesce(nullif(excluded.gclid, ''), whatsapp_bot.clients.gclid),
+          attribution_metadata = coalesce(whatsapp_bot.clients.attribution_metadata, '{}'::jsonb) || excluded.attribution_metadata,
           updated_at = now()
         returning id, phone, status, bot_instance_id
         `,
@@ -618,7 +618,7 @@ async function handlePublicLead(request: any, response: any) {
 
       await client.query(
         `
-          insert into public.bot_conversation_states (
+          insert into whatsapp_bot.bot_conversation_states (
             client_id,
             bot_instance_id,
             phone,
@@ -678,13 +678,13 @@ async function handlePublicLead(request: any, response: any) {
         const queueMediaPath = buildPublicBotQueueMediaPath("mentoria_prime", item, index);
         const outbound = await client.query(
           `
-            insert into public.outbound_messages (
+            insert into whatsapp_bot.outbound_messages (
               client_id, bot_instance_id, phone, body, media_type, media_path, status, scheduled_at
             )
             select $1, $7, $2, $3, $4, $5, 'queued', $6
             where not exists (
               select 1
-              from public.outbound_messages
+              from whatsapp_bot.outbound_messages
               where client_id = $1
                 and bot_instance_id = $7
                 and media_type = $4
@@ -706,7 +706,7 @@ async function handlePublicLead(request: any, response: any) {
 
       await client.query(
         `
-          insert into public.traffic_events (
+          insert into whatsapp_bot.traffic_events (
             client_id, bot_instance_id, phone, event_type, channel, platform, service_interest,
             athlete_age, age_group, lead_status, quality_score, metadata
           )
@@ -1090,7 +1090,7 @@ async function handlePublicSiteBotLead(request: any, response: any) {
         `
           with default_seller as (
             select id
-            from public.sellers
+            from whatsapp_bot.sellers
             where active = true
             order by
               case
@@ -1102,7 +1102,7 @@ async function handlePublicSiteBotLead(request: any, response: any) {
               created_at asc
             limit 1
           )
-          insert into public.clients (
+          insert into whatsapp_bot.clients (
             phone, bot_instance_id, name, region, notes, service_interest, source, status,
             assigned_seller_id, tags, lead_score, traffic_source,
             utm_source, utm_medium, utm_campaign, utm_content, utm_term,
@@ -1114,34 +1114,34 @@ async function handlePublicSiteBotLead(request: any, response: any) {
           )
           on conflict (phone)
           do update set
-            name = coalesce(nullif(excluded.name, ''), public.clients.name),
-            region = coalesce(excluded.region, public.clients.region),
-            notes = concat_ws(E'\\n\\n', nullif(public.clients.notes, ''), excluded.notes),
+            name = coalesce(nullif(excluded.name, ''), whatsapp_bot.clients.name),
+            region = coalesce(excluded.region, whatsapp_bot.clients.region),
+            notes = concat_ws(E'\\n\\n', nullif(whatsapp_bot.clients.notes, ''), excluded.notes),
             service_interest = excluded.service_interest,
             source = 'site',
-            assigned_seller_id = coalesce(public.clients.assigned_seller_id, excluded.assigned_seller_id),
+            assigned_seller_id = coalesce(whatsapp_bot.clients.assigned_seller_id, excluded.assigned_seller_id),
             tags = array_remove(
               (
                 select array_agg(distinct merged_tag.tag)
                 from unnest(
                   array_remove(
-                    array_remove(coalesce(public.clients.tags, '{}'::text[]), 'lp_instagram'),
+                    array_remove(coalesce(whatsapp_bot.clients.tags, '{}'::text[]), 'lp_instagram'),
                     'lp_cadastro_plano_carreira'
                   ) || excluded.tags
                 ) as merged_tag(tag)
               ),
               'aguardando_whatsapp'
             ),
-            lead_score = greatest(coalesce(public.clients.lead_score, 0), excluded.lead_score),
+            lead_score = greatest(coalesce(whatsapp_bot.clients.lead_score, 0), excluded.lead_score),
             traffic_source = excluded.traffic_source,
-            utm_source = coalesce(nullif(excluded.utm_source, ''), public.clients.utm_source),
-            utm_medium = coalesce(nullif(excluded.utm_medium, ''), public.clients.utm_medium),
-            utm_campaign = coalesce(nullif(excluded.utm_campaign, ''), public.clients.utm_campaign),
-            utm_content = coalesce(nullif(excluded.utm_content, ''), public.clients.utm_content),
-            utm_term = coalesce(nullif(excluded.utm_term, ''), public.clients.utm_term),
-            fbclid = coalesce(nullif(excluded.fbclid, ''), public.clients.fbclid),
-            gclid = coalesce(nullif(excluded.gclid, ''), public.clients.gclid),
-            attribution_metadata = coalesce(public.clients.attribution_metadata, '{}'::jsonb) || excluded.attribution_metadata,
+            utm_source = coalesce(nullif(excluded.utm_source, ''), whatsapp_bot.clients.utm_source),
+            utm_medium = coalesce(nullif(excluded.utm_medium, ''), whatsapp_bot.clients.utm_medium),
+            utm_campaign = coalesce(nullif(excluded.utm_campaign, ''), whatsapp_bot.clients.utm_campaign),
+            utm_content = coalesce(nullif(excluded.utm_content, ''), whatsapp_bot.clients.utm_content),
+            utm_term = coalesce(nullif(excluded.utm_term, ''), whatsapp_bot.clients.utm_term),
+            fbclid = coalesce(nullif(excluded.fbclid, ''), whatsapp_bot.clients.fbclid),
+            gclid = coalesce(nullif(excluded.gclid, ''), whatsapp_bot.clients.gclid),
+            attribution_metadata = coalesce(whatsapp_bot.clients.attribution_metadata, '{}'::jsonb) || excluded.attribution_metadata,
             bot_paused = false,
             updated_at = now()
           returning id, phone, status, bot_instance_id
@@ -1173,7 +1173,7 @@ async function handlePublicSiteBotLead(request: any, response: any) {
 
       await client.query(
         `
-          insert into public.bot_conversation_states (
+          insert into whatsapp_bot.bot_conversation_states (
             client_id, bot_instance_id, phone, stage, role_answer, athlete_age, age_group,
             service_interest, completed_at, metadata, last_outbound_at, updated_at
           )
@@ -1212,13 +1212,13 @@ async function handlePublicSiteBotLead(request: any, response: any) {
         const queueMediaPath = buildPublicBotQueueMediaPath(niche, item, index);
         const outbound = await client.query(
           `
-            insert into public.outbound_messages (
+            insert into whatsapp_bot.outbound_messages (
               client_id, bot_instance_id, phone, body, media_type, media_path, status, scheduled_at
             )
             select $1, $7, $2, $3, $4, $5, 'queued', $6
             where not exists (
               select 1
-              from public.outbound_messages
+              from whatsapp_bot.outbound_messages
               where client_id = $1
                 and bot_instance_id = $7
                 and media_type = $4
@@ -1240,7 +1240,7 @@ async function handlePublicSiteBotLead(request: any, response: any) {
 
       await client.query(
         `
-          insert into public.traffic_events (
+          insert into whatsapp_bot.traffic_events (
             client_id, bot_instance_id, phone, event_type, channel, platform, service_interest,
             athlete_age, age_group, lead_status, quality_score, metadata
           )
@@ -1276,7 +1276,7 @@ async function handlePublicSiteBotLead(request: any, response: any) {
       if (priorityCareerLead) {
         await client.query(
           `
-            insert into public.traffic_events (
+            insert into whatsapp_bot.traffic_events (
               client_id, bot_instance_id, phone, event_type, channel, platform, service_interest,
               athlete_age, age_group, lead_status, quality_score, metadata
             )
@@ -1419,18 +1419,18 @@ async function handleAuthenticatedClient(request: any, response: any) {
 
     const { rows } = await pool.query(
       `
-        insert into public.clients
+        insert into whatsapp_bot.clients
           (phone, bot_instance_id, name, region, notes, service_interest, source, status, assigned_seller_id, updated_at)
         values
           ($1, $8, $2, $3, $4, $5, $6, 'novo', $7, now())
         on conflict (phone)
         do update set
-          name = coalesce(excluded.name, public.clients.name),
-          region = coalesce(excluded.region, public.clients.region),
-          notes = coalesce(excluded.notes, public.clients.notes),
-          service_interest = coalesce(excluded.service_interest, public.clients.service_interest),
-          source = coalesce(excluded.source, public.clients.source),
-          assigned_seller_id = coalesce(public.clients.assigned_seller_id, excluded.assigned_seller_id),
+          name = coalesce(excluded.name, whatsapp_bot.clients.name),
+          region = coalesce(excluded.region, whatsapp_bot.clients.region),
+          notes = coalesce(excluded.notes, whatsapp_bot.clients.notes),
+          service_interest = coalesce(excluded.service_interest, whatsapp_bot.clients.service_interest),
+          source = coalesce(excluded.source, whatsapp_bot.clients.source),
+          assigned_seller_id = coalesce(whatsapp_bot.clients.assigned_seller_id, excluded.assigned_seller_id),
           updated_at = now()
         returning id, phone, name, status, region, service_interest, source, assigned_seller_id, bot_paused, notes, tags,
                   next_follow_up_at, lead_score, traffic_source, traffic_campaign_id, traffic_campaign_name,

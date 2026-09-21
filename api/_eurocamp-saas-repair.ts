@@ -36,8 +36,8 @@ export default async function handler(request: any, response: any) {
       `
         select distinct on (c.id)
           c.id, c.name, c.phone, c.notes, c.attribution_metadata, c.created_at
-        from public.clients c
-        join public.traffic_events te on te.client_id = c.id
+        from whatsapp_bot.clients c
+        join whatsapp_bot.traffic_events te on te.client_id = c.id
         where te.event_type = 'eurocamp_latam_simple_submitted'
         order by c.id, c.created_at asc
       `,

@@ -44,7 +44,7 @@ async function fetchRuntimeStatus(instanceId: string) {
   } catch {
     if (!process.env.SUPABASE_DB_URL) return null;
     try {
-      const { rows } = await pool.query("select payload, updated_at from public.bot_runtime where key = $1 limit 1", [runtimeKey("bot_status", instanceId)]);
+      const { rows } = await pool.query("select payload, updated_at from whatsapp_bot.bot_runtime where key = $1 limit 1", [runtimeKey("bot_status", instanceId)]);
       return rows[0]?.payload ? normalizeStatus(rows[0].payload, rows[0].updated_at, instanceId) : null;
     } catch { return null; }
   }

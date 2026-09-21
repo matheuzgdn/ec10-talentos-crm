@@ -12,7 +12,7 @@ export default async function handler(request: any, response: any) {
     const { rows } = await pool.query(
       `
         select id, auth_user_id, name, email, region, role, active, approved_at, created_at
-        from public.sellers
+        from whatsapp_bot.sellers
         order by active asc, created_at asc
       `
     );

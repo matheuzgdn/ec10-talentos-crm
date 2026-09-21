@@ -22,7 +22,7 @@ export default async function handler(request: any, response: any) {
       const clientResult = await client.query(
         `
           select id, phone, bot_instance_id
-          from public.clients
+          from whatsapp_bot.clients
           where id = $1
             and ($2::boolean or assigned_seller_id = $3)
           for update
@@ -45,7 +45,7 @@ export default async function handler(request: any, response: any) {
       }
       const outbound = await client.query(
         `
-          insert into public.outbound_messages (client_id, bot_instance_id, phone, body, media_type, media_path, status)
+          insert into whatsapp_bot.outbound_messages (client_id, bot_instance_id, phone, body, media_type, media_path, status)
           values ($1, $6, $2, $3, $4, $5, 'queued')
           returning id, created_at
         `,
@@ -54,7 +54,7 @@ export default async function handler(request: any, response: any) {
 
       await client.query(
         `
-          insert into public.traffic_events
+          insert into whatsapp_bot.traffic_events
             (client_id, bot_instance_id, phone, event_type, channel, platform, metadata)
           values
             ($1, $2, $3, 'seller_reply_queued', 'crm', 'whatsapp', $4::jsonb)

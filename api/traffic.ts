@@ -221,7 +221,7 @@ async function listDrafts(response: any) {
   const { rows } = await pool.query(
     `
       select ${draftSelect}
-      from public.traffic_campaign_drafts
+      from whatsapp_bot.traffic_campaign_drafts
       order by created_at desc
       limit 30
     `
@@ -236,7 +236,7 @@ async function listRecommendations(response: any) {
       select id, title, summary, recommendation_type, priority, status, confidence,
              impact_area, service_interest, age_group, campaign_id, campaign_name,
              reasoning, evidence, suggested_action, created_at
-      from public.traffic_agent_recommendations
+      from whatsapp_bot.traffic_agent_recommendations
       order by created_at desc
       limit 30
     `
@@ -303,7 +303,7 @@ async function createDraft(request: any, response: any) {
   const draft = buildCampaignDraft({ serviceInterest, ageGroup, region, budgetDaily, budgetTotal, goal });
   const { rows } = await pool.query(
     `
-      insert into public.traffic_campaign_drafts
+      insert into whatsapp_bot.traffic_campaign_drafts
         (name, objective, status, platform, service_interest, budget_daily, budget_total,
          age_min, age_max, locations, interests, placements, destination_url,
          whatsapp_message, copy_text, creative_notes, ai_rationale, meta_payload, created_by)
@@ -347,7 +347,7 @@ async function updateDraftStatus(request: any, response: any) {
 
   const { rows } = await pool.query(
     `
-      update public.traffic_campaign_drafts
+      update whatsapp_bot.traffic_campaign_drafts
       set status = $2,
           approved_by = case when $2 = 'approved' then $3 else approved_by end,
           updated_at = now()
@@ -425,7 +425,7 @@ async function publishDraft(request: any, response: any) {
   const { rows } = await pool.query(
     `
       select ${draftSelect}
-      from public.traffic_campaign_drafts
+      from whatsapp_bot.traffic_campaign_drafts
       where id = $1
       limit 1
     `,
@@ -515,7 +515,7 @@ async function publishDraft(request: any, response: any) {
 
     const updated = await pool.query(
       `
-        update public.traffic_campaign_drafts
+        update whatsapp_bot.traffic_campaign_drafts
         set status = 'published',
             meta_campaign_id = $2,
             meta_adset_id = $3,
@@ -545,7 +545,7 @@ async function publishDraft(request: any, response: any) {
     const message = error instanceof Error ? error.message : "Falha ao publicar no Meta.";
     const updated = await pool.query(
       `
-        update public.traffic_campaign_drafts
+        update whatsapp_bot.traffic_campaign_drafts
         set status = 'failed',
             meta_campaign_id = coalesce($2, meta_campaign_id),
             meta_adset_id = coalesce($3, meta_adset_id),
@@ -876,7 +876,7 @@ async function syncMetaData(daysInput = 30) {
     await client.query("begin");
     await client.query(
       `
-        delete from public.traffic_campaign_snapshots
+        delete from whatsapp_bot.traffic_campaign_snapshots
         where account_id = $1
           and date_start >= $2::date
           and date_end <= $3::date
@@ -913,7 +913,7 @@ async function syncMetaData(daysInput = 30) {
 
       await client.query(
         `
-          insert into public.traffic_campaign_snapshots
+          insert into whatsapp_bot.traffic_campaign_snapshots
             (platform, account_id, campaign_id, campaign_name, adset_id, adset_name,
              ad_id, ad_name, status, date_start, date_end, spend, impressions, reach,
              clicks, conversations, leads, qualified_leads, proposals, purchases,
@@ -960,7 +960,7 @@ async function syncMetaData(daysInput = 30) {
 
       await client.query(
         `
-          insert into public.traffic_campaign_snapshots
+          insert into whatsapp_bot.traffic_campaign_snapshots
             (platform, account_id, campaign_id, campaign_name, status, date_start, date_end,
              spend, impressions, reach, clicks, conversations, leads, qualified_leads,
              proposals, purchases, ctr, cpc, cpl, cpql, raw_payload)
@@ -1013,7 +1013,7 @@ async function findAutomationSellerId() {
   const { rows } = await pool.query(
     `
       select id
-      from public.sellers
+      from whatsapp_bot.sellers
       where active = true and role = 'admin'
       order by approved_at desc nulls last, created_at asc
       limit 1
@@ -1061,8 +1061,8 @@ async function backfillSchedulingIntentSignals() {
           c.attribution_metadata,
           format('crm-%s-meeting-intent', e.client_id) as event_id,
           'bot_meeting_requested_auto_audit' as source
-        from public.traffic_events e
-        join public.clients c on c.id = e.client_id
+        from whatsapp_bot.traffic_events e
+        join whatsapp_bot.clients c on c.id = e.client_id
         where e.event_type = 'bot_meeting_requested'
           and e.occurred_at >= now() - interval '30 days'
         order by e.client_id, e.occurred_at asc
@@ -1081,8 +1081,8 @@ async function backfillSchedulingIntentSignals() {
           c.attribution_metadata,
           format('crm-%s-meeting-intent', c.id) as event_id,
           'active_scheduling_state_auto_audit' as source
-        from public.bot_conversation_states b
-        join public.clients c on c.phone = b.phone
+        from whatsapp_bot.bot_conversation_states b
+        join whatsapp_bot.clients c on c.phone = b.phone
         where b.stage in ('awaiting_meeting_date', 'awaiting_meeting_time')
           and coalesce(b.updated_at, c.updated_at, c.created_at) >= now() - interval '30 days'
         order by c.id, coalesce(b.updated_at, c.updated_at, c.created_at) desc
@@ -1095,7 +1095,7 @@ async function backfillSchedulingIntentSignals() {
       from candidates candidate
       where not exists (
         select 1
-        from public.traffic_events q
+        from whatsapp_bot.traffic_events q
         where q.client_id = candidate.client_id
           and q.event_type = 'QualifiedLead'
           and q.metadata ->> 'eventId' = candidate.event_id
@@ -1135,7 +1135,7 @@ async function backfillSchedulingIntentSignals() {
 
     await pool.query(
       `
-        insert into public.traffic_events
+        insert into whatsapp_bot.traffic_events
           (client_id, phone, event_type, channel, platform, service_interest,
            athlete_age, age_group, lead_status, quality_score, metadata, occurred_at)
         values
@@ -1181,13 +1181,13 @@ async function backfillScheduledMeetingSignals() {
         c.fbclid,
         c.attribution_metadata,
         format('crm-%s-schedule-%s', e.client_id, coalesce(e.metadata #>> '{schedule,startsAt}', e.occurred_at::text)) as event_id
-      from public.traffic_events e
-      join public.clients c on c.id = e.client_id
+      from whatsapp_bot.traffic_events e
+      join whatsapp_bot.clients c on c.id = e.client_id
       where e.event_type = 'bot_meeting_scheduled'
         and e.occurred_at >= now() - interval '30 days'
         and not exists (
           select 1
-          from public.traffic_events s
+          from whatsapp_bot.traffic_events s
           where s.client_id = e.client_id
             and s.event_type = 'Schedule'
             and s.metadata ->> 'sourceEventId' = e.id::text
@@ -1227,7 +1227,7 @@ async function backfillScheduledMeetingSignals() {
 
     await pool.query(
       `
-        insert into public.traffic_events
+        insert into whatsapp_bot.traffic_events
           (client_id, phone, event_type, channel, platform, service_interest,
            athlete_age, age_group, lead_status, quality_score, metadata, occurred_at)
         values
@@ -1268,7 +1268,7 @@ async function runTrafficAutoAudit(input: { force?: boolean; periodDays?: number
     const recent = await pool.query(
       `
         select occurred_at
-        from public.traffic_events
+        from whatsapp_bot.traffic_events
         where event_type = 'traffic_auto_audit_run'
           and occurred_at >= now() - interval '5 hours'
         order by occurred_at desc
@@ -1332,7 +1332,7 @@ async function runTrafficAutoAudit(input: { force?: boolean; periodDays?: number
   const existing = await pool.query(
     `
       select lower(title) as title
-      from public.traffic_agent_recommendations
+      from whatsapp_bot.traffic_agent_recommendations
       where created_at >= now() - interval '24 hours'
         and status in ('draft', 'pending_approval', 'approved')
     `
@@ -1348,7 +1348,7 @@ async function runTrafficAutoAudit(input: { force?: boolean; periodDays?: number
   const qualityScore = Math.max(0, Math.min(100, 100 - blockers * 15));
   await pool.query(
     `
-      insert into public.traffic_events
+      insert into whatsapp_bot.traffic_events
         (event_type, channel, platform, quality_score, metadata)
       values
         ('traffic_auto_audit_run', 'crm', 'meta_ads', $1, $2::jsonb)
@@ -1430,7 +1430,7 @@ async function exportTrafficData(request: any, response: any) {
              traffic_campaign_id, traffic_campaign_name, traffic_adset_id, traffic_ad_id,
              utm_source, utm_medium, utm_campaign, utm_content, utm_term,
              fbclid, gclid, attribution_metadata, last_message_at, created_at
-      from public.clients
+      from whatsapp_bot.clients
       where created_at >= $1::timestamptz
       order by created_at desc
       limit 5000
@@ -1441,7 +1441,7 @@ async function exportTrafficData(request: any, response: any) {
   const events = await pool.query(
     `
       select *
-      from public.traffic_events
+      from whatsapp_bot.traffic_events
       where occurred_at >= $1::timestamptz
       order by occurred_at desc
       limit 10000
@@ -1452,7 +1452,7 @@ async function exportTrafficData(request: any, response: any) {
   const recommendations = await pool.query(
     `
       select *
-      from public.traffic_agent_recommendations
+      from whatsapp_bot.traffic_agent_recommendations
       order by created_at desc
       limit 1000
     `
@@ -1461,7 +1461,7 @@ async function exportTrafficData(request: any, response: any) {
   const drafts = await pool.query(
     `
       select *
-      from public.traffic_campaign_drafts
+      from whatsapp_bot.traffic_campaign_drafts
       order by created_at desc
       limit 1000
     `
@@ -1470,7 +1470,7 @@ async function exportTrafficData(request: any, response: any) {
   const snapshots = await pool.query(
     `
       select *
-      from public.traffic_campaign_snapshots
+      from whatsapp_bot.traffic_campaign_snapshots
       where created_at >= $1::timestamptz or date_start >= $2::date
       order by date_start desc, created_at desc
       limit 20000

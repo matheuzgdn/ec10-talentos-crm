@@ -88,7 +88,7 @@ export default async function handler(request: any, response: any) {
     try {
       await pool.query(
         `
-          insert into public.traffic_events (
+          insert into whatsapp_bot.traffic_events (
             bot_instance_id, event_type, channel, platform, service_interest,
             lead_status, quality_score, campaign_id, campaign_name, adset_id, ad_id,
             utm_source, utm_medium, utm_campaign, utm_content, utm_term, fbclid, metadata

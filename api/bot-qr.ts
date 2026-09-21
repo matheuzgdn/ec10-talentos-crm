@@ -42,7 +42,7 @@ async function fetchRuntimeStatus(instanceId: string) {
 
   try {
     const { rows } = await pool.query(
-      "select payload, updated_at from public.bot_runtime where key = $1 limit 1",
+      "select payload, updated_at from whatsapp_bot.bot_runtime where key = $1 limit 1",
       [runtimeKey("bot_status", instanceId)]
     );
     return rows[0] ?? null;
@@ -62,7 +62,7 @@ async function fetchRuntimeQr(instanceId: string) {
     if (!process.env.SUPABASE_DB_URL) return null;
     try {
       const { rows } = await pool.query(
-        "select payload, updated_at from public.bot_runtime where key = $1 limit 1",
+        "select payload, updated_at from whatsapp_bot.bot_runtime where key = $1 limit 1",
         [runtimeKey("whatsapp_qr", instanceId)]
       );
       return decodeRuntimeQr(rows[0]);

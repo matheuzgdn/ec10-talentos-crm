@@ -139,7 +139,7 @@ export async function loadTrafficContext(periodDaysInput = 30): Promise<TrafficC
         count(*) filter (where status = 'fechado')::int as closed,
         count(*) filter (where status = 'perdido')::int as lost,
         coalesce(avg(lead_score), 0)::numeric(10,2) as average_score
-      from public.clients
+      from whatsapp_bot.clients
       where created_at >= now() - ($1::int * interval '1 day')
     `,
     [periodDays]
@@ -149,7 +149,7 @@ export async function loadTrafficContext(periodDaysInput = 30): Promise<TrafficC
     pool,
     `
       select event_type, count(*)::int as total
-      from public.traffic_events
+      from whatsapp_bot.traffic_events
       where occurred_at >= now() - ($1::int * interval '1 day')
       group by event_type
       order by total desc, event_type asc
@@ -161,7 +161,7 @@ export async function loadTrafficContext(periodDaysInput = 30): Promise<TrafficC
     pool,
     `
       select coalesce(age_group, 'sem_faixa') as age_group, count(*)::int as total
-      from public.traffic_events
+      from whatsapp_bot.traffic_events
       where occurred_at >= now() - ($1::int * interval '1 day')
         and event_type in ('bot_age_captured', 'bot_link_sent', 'qualified_lead', 'purchase')
       group by coalesce(age_group, 'sem_faixa')
@@ -176,7 +176,7 @@ export async function loadTrafficContext(periodDaysInput = 30): Promise<TrafficC
       select id, client_id, phone, event_type, channel, platform, service_interest,
              athlete_age, age_group, lead_status, quality_score, campaign_name,
              metadata, occurred_at
-      from public.traffic_events
+      from whatsapp_bot.traffic_events
       order by occurred_at desc
       limit 40
     `
@@ -188,7 +188,7 @@ export async function loadTrafficContext(periodDaysInput = 30): Promise<TrafficC
       select id, title, summary, recommendation_type, priority, status, confidence,
              impact_area, service_interest, age_group, campaign_id, campaign_name,
              reasoning, evidence, suggested_action, created_at
-      from public.traffic_agent_recommendations
+      from whatsapp_bot.traffic_agent_recommendations
       order by created_at desc
       limit 20
     `
@@ -201,7 +201,7 @@ export async function loadTrafficContext(periodDaysInput = 30): Promise<TrafficC
              budget_total, age_min, age_max, locations, interests, placements,
              destination_url, whatsapp_message, copy_text, creative_notes,
              ai_rationale, meta_payload, created_at, updated_at
-      from public.traffic_campaign_drafts
+      from whatsapp_bot.traffic_campaign_drafts
       order by created_at desc
       limit 20
     `
@@ -219,7 +219,7 @@ export async function loadTrafficContext(periodDaysInput = 30): Promise<TrafficC
              sum(proposals)::int as proposals,
              sum(purchases)::int as purchases,
              max(created_at) as last_synced_at
-      from public.traffic_campaign_snapshots
+      from whatsapp_bot.traffic_campaign_snapshots
       where date_start >= current_date - ($1::int * interval '1 day')
       group by campaign_id, campaign_name, status
       order by spend desc nulls last
@@ -248,7 +248,7 @@ export async function loadTrafficContext(periodDaysInput = 30): Promise<TrafficC
         case when sum(impressions) > 0 then (sum(clicks)::numeric / sum(impressions)::numeric) * 100 else 0 end as ctr,
         case when sum(clicks) > 0 then sum(spend)::numeric / sum(clicks)::numeric else 0 end as cpc,
         max(created_at) as last_synced_at
-      from public.traffic_campaign_snapshots
+      from whatsapp_bot.traffic_campaign_snapshots
       where date_start >= current_date - ($1::int * interval '1 day')
         and nullif(ad_id, '') is not null
       group by campaign_id, campaign_name, adset_id, adset_name, ad_id, ad_name
@@ -273,7 +273,7 @@ export async function loadTrafficContext(periodDaysInput = 30): Promise<TrafficC
              sum(purchases)::int as purchases,
              case when sum(impressions) > 0 then (sum(clicks)::numeric / sum(impressions)::numeric) * 100 else 0 end as ctr,
              case when sum(clicks) > 0 then sum(spend)::numeric / sum(clicks)::numeric else 0 end as cpc
-      from public.traffic_campaign_snapshots
+      from whatsapp_bot.traffic_campaign_snapshots
       where date_start >= current_date - ($1::int * interval '1 day')
       group by date_start
       order by date_start asc
@@ -299,9 +299,9 @@ export async function loadTrafficContext(periodDaysInput = 30): Promise<TrafficC
         b.metadata #>> '{meetingMeetUrl}' as meet_url,
         coalesce((b.metadata #>> '{meetingSellerNotified}')::boolean, false) as seller_notified,
         b.updated_at
-      from public.bot_conversation_states b
-      join public.clients c on c.id = b.client_id
-      left join public.sellers s on s.id = c.assigned_seller_id
+      from whatsapp_bot.bot_conversation_states b
+      join whatsapp_bot.clients c on c.id = b.client_id
+      left join whatsapp_bot.sellers s on s.id = c.assigned_seller_id
       where nullif(b.metadata #>> '{meeting,startsAt}', '') is not null
         and (b.metadata #>> '{meeting,startsAt}') ~ '^\\d{4}-\\d{2}-\\d{2}'
         and (b.metadata #>> '{meeting,startsAt}')::timestamptz >= now() - interval '7 days'
@@ -340,7 +340,7 @@ export async function loadTrafficContext(periodDaysInput = 30): Promise<TrafficC
               or nullif(attribution_metadata ->> 'fbc', '') is not null
             )
         )::int as closed_with_attribution
-      from public.clients
+      from whatsapp_bot.clients
       where created_at >= now() - ($1::int * interval '1 day')
     `,
     [periodDays]
@@ -354,7 +354,7 @@ export async function loadTrafficContext(periodDaysInput = 30): Promise<TrafficC
         count(*) filter (where event_type in ('proposal_requested', 'bot_meeting_scheduled'))::int as schedule_events,
         count(*) filter (where event_type = 'purchase')::int as purchase_events,
         count(*) filter (where event_type = 'bot_meeting_scheduled')::int as meeting_events
-      from public.traffic_events
+      from whatsapp_bot.traffic_events
       where occurred_at >= now() - ($1::int * interval '1 day')
     `,
     [periodDays]
@@ -863,7 +863,7 @@ export async function insertTrafficRecommendations(
   for (const item of recommendations) {
     const { rows } = await queryable.query(
       `
-        insert into public.traffic_agent_recommendations
+        insert into whatsapp_bot.traffic_agent_recommendations
           (title, summary, recommendation_type, priority, status, confidence,
            impact_area, service_interest, age_group, campaign_id, campaign_name,
            reasoning, evidence, suggested_action, created_by)

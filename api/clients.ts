@@ -59,8 +59,8 @@ async function handleFormSubmissions(request: any, response: any, seller: any) {
               then 'site_a'
             else null
           end as page_variant
-        from public.clients c
-        left join public.sellers s on s.id = c.assigned_seller_id
+        from whatsapp_bot.clients c
+        left join whatsapp_bot.sellers s on s.id = c.assigned_seller_id
         where c.source = 'site'
           and not (coalesce(c.tags, '{}') @> array['campanha_revela_prioritario']::text[])
       )
@@ -135,14 +135,14 @@ async function handleFormSubmissions(request: any, response: any, seller: any) {
       from base c
       left join lateral (
         select *
-        from public.bot_conversation_states
+        from whatsapp_bot.bot_conversation_states
         where client_id = c.id
         order by updated_at desc
         limit 1
       ) b on true
       left join lateral (
         select *
-        from public.lead_attribution
+        from whatsapp_bot.lead_attribution
         where client_id = c.id
         order by last_touch_at desc nulls last, updated_at desc nulls last
         limit 1
@@ -158,14 +158,14 @@ async function handleFormSubmissions(request: any, response: any, seller: any) {
             array_agg(error_message order by coalesce(sent_at, created_at) desc)
             filter (where status in ('failed', 'cancelled') and nullif(error_message, '') is not null)
           )[1] as last_error
-        from public.outbound_messages
+        from whatsapp_bot.outbound_messages
         where client_id = c.id
       ) outbound on true
       left join lateral (
         select
           count(*) filter (where direction = 'outbound' and coalesce(whatsapp_ack, -1) >= 1) as confirmed,
           count(*) filter (where direction = 'outbound' and coalesce(whatsapp_ack, -1) < 1) as unconfirmed
-        from public.messages
+        from whatsapp_bot.messages
         where client_id = c.id
       ) messages on true
       ${where}
@@ -283,24 +283,24 @@ async function handleLibertacademySubmissions(request: any, response: any, selle
         coalesce(outbound.failed, 0)::int as whatsapp_failed,
         coalesce(messages.confirmed, 0)::int as confirmed_messages,
         b.metadata #>> '{meeting,startsAt}' as meeting_starts_at
-      from public.clients c
-      left join public.sellers s on s.id = c.assigned_seller_id
+      from whatsapp_bot.clients c
+      left join whatsapp_bot.sellers s on s.id = c.assigned_seller_id
       left join lateral (
         select
           count(*) filter (where status = 'sent') as sent,
           count(*) filter (where status = 'queued') as queued,
           count(*) filter (where status = 'failed') as failed
-        from public.outbound_messages
+        from whatsapp_bot.outbound_messages
         where client_id = c.id
       ) outbound on true
       left join lateral (
         select count(*) filter (where direction = 'outbound' and coalesce(whatsapp_ack, -1) >= 1) as confirmed
-        from public.messages
+        from whatsapp_bot.messages
         where client_id = c.id
       ) messages on true
       left join lateral (
         select metadata
-        from public.bot_conversation_states
+        from whatsapp_bot.bot_conversation_states
         where client_id = c.id
         order by updated_at desc
         limit 1
@@ -569,10 +569,10 @@ export default async function handler(request: any, response: any) {
           m.direction as last_message_direction,
           m.media_type as last_message_media_type,
           m.created_at as last_message_created_at
-        from public.clients c
+        from whatsapp_bot.clients c
         left join lateral (
           select body, direction, media_type, created_at
-          from public.messages
+          from whatsapp_bot.messages
           where client_id = c.id
           order by created_at desc
           limit 1
@@ -583,7 +583,7 @@ export default async function handler(request: any, response: any) {
             metadata #>> '{meeting,endsAt}' as meeting_ends_at,
             coalesce(metadata #>> '{meetingSellerName}', metadata #>> '{sellerName}') as meeting_seller_name,
             coalesce(metadata #>> '{meetingMeetUrl}', metadata #>> '{meeting,meetUrl}') as meeting_meet_url
-          from public.bot_conversation_states
+          from whatsapp_bot.bot_conversation_states
           where client_id = c.id
           order by updated_at desc
           limit 1

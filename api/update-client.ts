@@ -218,7 +218,7 @@ function appendTags(fields: string[], values: unknown[], tags: string[]) {
   fields.push(`
     tags = coalesce((
       select array_agg(distinct tag order by tag)
-      from unnest(coalesce(public.clients.tags, '{}'::text[]) || $${values.length}::text[]) as merged(tag)
+      from unnest(coalesce(whatsapp_bot.clients.tags, '{}'::text[]) || $${values.length}::text[]) as merged(tag)
     ), '{}'::text[])
   `);
 }
@@ -319,7 +319,7 @@ async function recordStatusTrafficEvent(input: { sellerId: string; row: any; sta
 
     await pool.query(
       `
-        insert into public.traffic_events
+        insert into whatsapp_bot.traffic_events
           (client_id, bot_instance_id, phone, event_type, channel, platform, service_interest,
            lead_status, quality_score, campaign_id, campaign_name, adset_id, ad_id,
            utm_source, utm_medium, utm_campaign, utm_content, utm_term,
@@ -379,7 +379,7 @@ export default async function handler(request: any, response: any) {
 
       const { rows } = await pool.query(
         `
-          delete from public.clients
+          delete from whatsapp_bot.clients
           where id = $1
             and ($2::boolean or assigned_seller_id = $3)
           returning id
@@ -426,7 +426,7 @@ export default async function handler(request: any, response: any) {
         const target = await database.query(
           `
             select id, phone, bot_instance_id
-            from public.clients
+            from whatsapp_bot.clients
             where id = $1
               and ($2::boolean or assigned_seller_id = $3)
             for update
@@ -445,7 +445,7 @@ export default async function handler(request: any, response: any) {
 
         await database.query(
           `
-            delete from public.bot_conversation_states
+            delete from whatsapp_bot.bot_conversation_states
             where bot_instance_id = $3
               and (
                 client_id = $1
@@ -457,7 +457,7 @@ export default async function handler(request: any, response: any) {
 
         await database.query(
           `
-            update public.outbound_messages
+            update whatsapp_bot.outbound_messages
             set status = 'cancelled',
                 error_message = coalesce(error_message, 'Cancelado pelo reset manual do bot.'),
                 sent_at = null
@@ -470,13 +470,13 @@ export default async function handler(request: any, response: any) {
 
         await database.query(
           `
-            delete from public.bot_dedupe_locks
+            delete from whatsapp_bot.bot_dedupe_locks
             where client_id = $1
                or phone = any($2::text[])
                or exists (
                  select 1
                  from unnest($2::text[]) as candidate(phone)
-                 where public.bot_dedupe_locks.key like '%' || candidate.phone || '%'
+                 where whatsapp_bot.bot_dedupe_locks.key like '%' || candidate.phone || '%'
                )
           `,
           [row.id, resetPhoneCandidates]
@@ -484,11 +484,11 @@ export default async function handler(request: any, response: any) {
 
         const updated = await database.query(
           `
-            update public.clients
+            update whatsapp_bot.clients
             set bot_paused = false,
                 tags = coalesce((
                   select array_agg(distinct tag order by tag)
-                  from unnest(coalesce(public.clients.tags, '{}'::text[])) as tag
+                  from unnest(coalesce(whatsapp_bot.clients.tags, '{}'::text[])) as tag
                   where not (tag = any($2::text[]))
                 ), '{}'::text[]),
                 updated_at = now()
@@ -593,7 +593,7 @@ export default async function handler(request: any, response: any) {
 
     if (Object.keys(metadataPatch).length) {
       values.push(JSON.stringify(metadataPatch));
-      fields.push(`attribution_metadata = coalesce(public.clients.attribution_metadata, '{}'::jsonb) || $${values.length}::jsonb`);
+      fields.push(`attribution_metadata = coalesce(whatsapp_bot.clients.attribution_metadata, '{}'::jsonb) || $${values.length}::jsonb`);
     }
 
     if (!fields.length) {
@@ -612,7 +612,7 @@ export default async function handler(request: any, response: any) {
 
     const { rows } = await pool.query(
       `
-        update public.clients
+        update whatsapp_bot.clients
         set ${fields.join(", ")}
         where id = $1
           ${accessWhere}
@@ -643,7 +643,7 @@ export default async function handler(request: any, response: any) {
 
       await pool.query(
         `
-          insert into public.outbound_messages (client_id, bot_instance_id, phone, body, media_type, status)
+          insert into whatsapp_bot.outbound_messages (client_id, bot_instance_id, phone, body, media_type, status)
           values ($1, $4, $2, $3, 'text', 'queued')
         `,
         [row.id, row.phone, body, botInstanceId]

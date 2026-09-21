@@ -34,8 +34,8 @@ export default async function handler(request: any, response: any) {
         select
           m.id, m.client_id, m.bot_instance_id, m.direction, m.body, m.media_type, m.media_path,
           m.whatsapp_message_id, m.whatsapp_ack, m.whatsapp_ack_at, m.whatsapp_chat_id, m.created_at
-        from public.messages m
-        join public.clients c on c.id = m.client_id
+        from whatsapp_bot.messages m
+        join whatsapp_bot.clients c on c.id = m.client_id
         where m.client_id = $1
           ${accessWhere}
         order by m.created_at asc

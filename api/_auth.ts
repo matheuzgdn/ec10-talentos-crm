@@ -66,7 +66,7 @@ export async function createCrmSession(response: any, userId: string) {
 
   await pool.query(
     `
-      insert into public.crm_auth_sessions (user_id, token_hash, expires_at, last_seen_at)
+      insert into whatsapp_bot.crm_auth_sessions (user_id, token_hash, expires_at, last_seen_at)
       values ($1, $2, $3, now())
     `,
     [userId, hashToken(token), expiresAt]
@@ -78,7 +78,7 @@ export async function createCrmSession(response: any, userId: string) {
 export async function destroyCrmSession(request: any, response: any) {
   const token = parseCookies(request)[sessionCookieName];
   if (token) {
-    await pool.query("delete from public.crm_auth_sessions where token_hash = $1", [hashToken(token)]);
+    await pool.query("delete from whatsapp_bot.crm_auth_sessions where token_hash = $1", [hashToken(token)]);
   }
   response.setHeader("set-cookie", clearSessionCookie());
 }
@@ -92,16 +92,16 @@ export async function createCrmUser(emailInput: string, password: string) {
   try {
     await client.query("begin");
 
-    const existing = await client.query("select id from public.crm_auth_users where lower(email) = lower($1)", [email]);
+    const existing = await client.query("select id from whatsapp_bot.crm_auth_users where lower(email) = lower($1)", [email]);
     if (existing.rowCount) throw new HttpError(409, "Este e-mail ja tem acesso ao CRM.");
 
-    const countResult = await client.query<{ total: string }>("select count(*)::text as total from public.crm_auth_users");
+    const countResult = await client.query<{ total: string }>("select count(*)::text as total from whatsapp_bot.crm_auth_users");
     const isFirstUser = Number(countResult.rows[0]?.total ?? 0) === 0;
     const displayName = email.split("@")[0] || "Vendedor";
 
     const sellerResult = await client.query(
       `
-        insert into public.sellers
+        insert into whatsapp_bot.sellers
           (name, email, region, role, active, approved_at, last_login_at)
         values
           ($1, $2, 'brasil', $3, $4, case when $4 then now() else null end, now())
@@ -112,7 +112,7 @@ export async function createCrmUser(emailInput: string, password: string) {
 
     const userResult = await client.query(
       `
-        insert into public.crm_auth_users (seller_id, email, password_hash, last_login_at)
+        insert into whatsapp_bot.crm_auth_users (seller_id, email, password_hash, last_login_at)
         values ($1, $2, $3, now())
         returning id, email, seller_id
       `,
@@ -148,8 +148,8 @@ export async function loginCrmUser(emailInput: string, password: string) {
         s.active,
         s.approved_at,
         s.created_at
-      from public.crm_auth_users u
-      join public.sellers s on s.id = u.seller_id
+      from whatsapp_bot.crm_auth_users u
+      join whatsapp_bot.sellers s on s.id = u.seller_id
       where lower(u.email) = lower($1)
       limit 1
     `,
@@ -162,10 +162,10 @@ export async function loginCrmUser(emailInput: string, password: string) {
   }
 
   await pool.query(
-    "update public.crm_auth_users set last_login_at = now(), updated_at = now() where id = $1",
+    "update whatsapp_bot.crm_auth_users set last_login_at = now(), updated_at = now() where id = $1",
     [row.user_id]
   );
-  await pool.query("update public.sellers set last_login_at = now() where id = $1", [row.id]);
+  await pool.query("update whatsapp_bot.sellers set last_login_at = now() where id = $1", [row.id]);
 
   return {
     user: { id: row.user_id, email: row.email },
@@ -190,9 +190,9 @@ export async function ensureSeller(request: any, options: { requireActive?: bool
         s.active,
         s.approved_at,
         s.created_at
-      from public.crm_auth_sessions sess
-      join public.crm_auth_users u on u.id = sess.user_id
-      join public.sellers s on s.id = u.seller_id
+      from whatsapp_bot.crm_auth_sessions sess
+      join whatsapp_bot.crm_auth_users u on u.id = sess.user_id
+      join whatsapp_bot.sellers s on s.id = u.seller_id
       where sess.token_hash = $1
         and sess.expires_at > now()
       limit 1
@@ -205,7 +205,7 @@ export async function ensureSeller(request: any, options: { requireActive?: bool
 
   await pool.query(
     `
-      update public.crm_auth_sessions
+      update whatsapp_bot.crm_auth_sessions
       set last_seen_at = now()
       where token_hash = $1
         and last_seen_at < now() - interval '5 minutes'
