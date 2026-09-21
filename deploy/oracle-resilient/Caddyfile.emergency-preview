@@ -1,0 +1,26 @@
+crm-api.147-15-27-235.nip.io {
+  encode zstd gzip
+  route {
+    @gateway path /health/* /auth/v1/* /rest/v1/* /storage/v1/* /functions/v1/*
+    handle @gateway {
+      reverse_proxy 127.0.0.1:3200
+    }
+    @publicApi path /api/*
+    handle @publicApi {
+      reverse_proxy https://ec10talentos.com {
+        header_up Host ec10talentos.com
+      }
+    }
+    handle {
+      root * /opt/ec10-crm-preview
+      try_files {path} /crm/index.html
+      file_server
+    }
+  }
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options "nosniff"
+    Referrer-Policy "strict-origin-when-cross-origin"
+    -Server
+  }
+}

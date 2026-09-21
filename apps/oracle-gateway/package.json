@@ -1,0 +1,17 @@
+{
+  "name": "@crm/oracle-gateway",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.mjs",
+    "migrate": "node scripts/migrate.mjs",
+    "self-test": "node scripts/self-test.mjs",
+    "integration-test": "node scripts/integration-test.mjs",
+    "login-e2e-test": "node scripts/login-e2e-test.mjs"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "pg": "^8.21.0"
+  }
+}
