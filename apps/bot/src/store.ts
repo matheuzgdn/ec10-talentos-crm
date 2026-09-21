@@ -1865,6 +1865,40 @@ export async function getClientAutomationStateByPhone(phoneInput: string): Promi
   return (data?.[0] as ClientAutomationState | undefined) ?? null;
 }
 
+export async function fetchRecentInboundRecoveryCandidates(hours = 24, limit = 80): Promise<ClientAutomationState[]> {
+  const supabase = getSupabase();
+  const database = getDatabase();
+  if (!supabase && !database) return [];
+  const safeHours = Math.max(1, Math.min(72, Math.round(hours)));
+  const safeLimit = Math.max(1, Math.min(200, Math.round(limit)));
+  const fields = `id, bot_instance_id, phone, name, bot_paused, tags,
+                  source, service_interest, athlete_age, traffic_source, utm_source, utm_campaign, fbclid, attribution_metadata`;
+
+  if (database) {
+    const { rows } = await database.query<ClientAutomationState>(
+      `select ${fields}
+       from ${botDbSchema}.clients
+       where bot_instance_id = $1
+         and created_at >= now() - make_interval(hours => $2::int)
+       order by created_at desc
+       limit $3`,
+      [currentBotInstanceId(), safeHours, safeLimit],
+    );
+    return rows;
+  }
+
+  const cutoff = new Date(Date.now() - safeHours * 60 * 60_000).toISOString();
+  const { data, error } = await supabase!
+    .from("clients")
+    .select(fields.replace(/\s+/g, " "))
+    .eq("bot_instance_id", currentBotInstanceId())
+    .gte("created_at", cutoff)
+    .order("created_at", { ascending: false })
+    .limit(safeLimit);
+  if (error) throw error;
+  return (data as unknown as ClientAutomationState[] | null) ?? [];
+}
+
 export async function getClientAutomationStateById(clientId: string): Promise<ClientAutomationState | null> {
   const supabase = getSupabase();
   const database = getDatabase();

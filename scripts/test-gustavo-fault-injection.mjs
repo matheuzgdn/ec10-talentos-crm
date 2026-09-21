@@ -73,6 +73,8 @@ assert.match(indexSource, /status = persistence\.ok \? currentBotStatus : "degra
 assert.match(indexSource, /recoverMissedInboundMessages/);
 assert.match(indexSource, /Recovered missed WhatsApp inbound messages/);
 assert.match(indexSource, /combinedBody = recovered\.map/);
+assert.match(indexSource, /fetchRecentInboundRecoveryCandidates/);
+assert.doesNotMatch(indexSource, /recoverMissedInboundMessages[\s\S]{0,1200}client\.getChats\(\)/);
 assert.match(storeSource, /const botDbSchema = `\"\$\{config\.BOT_DB_SCHEMA\}\"`/);
 assert.match(storeSource, /select 1 from \$\{botDbSchema\}\.clients limit 1/);
 assert.doesNotMatch(
@@ -82,7 +84,7 @@ assert.doesNotMatch(
 assert.match(whatsappPatchSource, /delete message\.__x_id/);
 
 console.log(JSON.stringify({
-  passed: positiveReplies.length + 28,
-  total: positiveReplies.length + 28,
+  passed: positiveReplies.length + 30,
+  total: positiveReplies.length + 30,
   noWhatsAppSent: true,
 }, null, 2));

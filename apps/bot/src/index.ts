@@ -100,6 +100,7 @@ import {
   countRecentOutboundChatMessages,
   fetchActiveBotRules,
   fetchQueuedOutboundMessages,
+  fetchRecentInboundRecoveryCandidates,
   fetchPendingWhatsAppPolls,
   createBotBookingLink,
   fetchBookedEc10MeetingStarts,
@@ -6746,14 +6747,19 @@ async function main() {
     processingInboundRecovery = true;
     try {
       const cutoffSeconds = Math.floor((Date.now() - 24 * 60 * 60_000) / 1000);
-      const chats = (await client.getChats())
-        .filter((chat: any) => !chat?.isGroup && Number(chat?.timestamp ?? 0) >= cutoffSeconds)
-        .sort((left: any, right: any) => Number(right?.timestamp ?? 0) - Number(left?.timestamp ?? 0))
-        .slice(0, 60);
+      const candidates = await fetchRecentInboundRecoveryCandidates(24, 80);
       let recoveredMessages = 0;
       let recoveredConversations = 0;
 
-      for (const chat of chats) {
+      for (const candidate of candidates) {
+        if (candidate.bot_paused || !shouldRunWhatsAppAutomation(candidate)) continue;
+        const chatIds = await resolveOutboundChatIds(client, candidate.phone);
+        let chat: any = null;
+        for (const chatId of chatIds) {
+          chat = await client.getChatById(chatId).catch(() => null);
+          if (chat && typeof chat.fetchMessages === 'function') break;
+        }
+        if (!chat || chat.isGroup || typeof chat.fetchMessages !== 'function') continue;
         const messages = (await chat.fetchMessages({ limit: 40 }).catch(() => []))
           .filter((item: any) => !item?.fromMe && Number(item?.timestamp ?? 0) >= cutoffSeconds)
           .sort((left: any, right: any) => Number(left?.timestamp ?? 0) - Number(right?.timestamp ?? 0));
@@ -6762,7 +6768,7 @@ async function main() {
         for (const message of messages) {
           if (String(message?.from ?? '').includes('status@broadcast')) continue;
           if (!String(message?.body ?? '').trim() && !message?.hasMedia) continue;
-          const chatId = String(message?.from ?? chat?.id?._serialized ?? '');
+          const chatId = String(message?.from ?? chat?.id?._serialized ?? chatIds[0] ?? '');
           if (!chatId) continue;
           const resolvedPhone = await resolveInboundChatId(client, chatId);
           if (await findActiveBotLabWhatsappTester(resolvedPhone)) continue;
