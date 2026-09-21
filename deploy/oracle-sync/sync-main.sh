@@ -35,7 +35,14 @@ fi
 target_commit="$(git --git-dir="$MIRROR_DIR" rev-parse "refs/heads/$BRANCH")"
 deployed_commit="$(cat "$STATE_FILE" 2>/dev/null || true)"
 if [[ "$target_commit" == "$deployed_commit" ]]; then
-  write_status "ready" "$target_commit" "already_deployed"
+  current_health="$(curl -fsS --max-time 4 http://127.0.0.1:3001/health 2>/dev/null || true)"
+  if grep -Eq '"status":"ready"' <<<"$current_health"; then
+    write_status "ready" "$target_commit" "already_deployed"
+  elif grep -Eq '"ok":true' <<<"$current_health"; then
+    write_status "attention" "$target_commit" "existing_deployment_whatsapp_reconnect_required"
+  else
+    write_status "attention" "$target_commit" "existing_deployment_health_unavailable"
+  fi
   exit 0
 fi
 

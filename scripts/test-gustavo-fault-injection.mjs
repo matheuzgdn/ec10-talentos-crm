@@ -56,6 +56,7 @@ const whatsappPatchSource = fs.readFileSync("scripts/patch-whatsapp-web.cjs", "u
 const deploySyncSource = fs.readFileSync("deploy/oracle-sync/sync-main.sh", "utf8");
 const aiResilienceSource = fs.readFileSync("deploy/cliente-whatsapp-crm-bot.service.d/75-ai-resilience.conf", "utf8");
 const guardianSource = fs.readFileSync("scripts/guardi_o_gustavo.py", "utf8");
+const guardianServiceSource = fs.readFileSync("deploy/guardi-o-gustavo.service", "utf8");
 const primaryRouteSource = indexSource.match(/async function handleGustavoPrimaryRoute[\s\S]*?\n}\n\nasync function saveGustavoRecoveryPatch/)?.[0] || "";
 assert.match(primaryRouteSource, /handleGustavoMandatorySequence\(/);
 assert.match(primaryRouteSource, /withSdrCustomerTurn\(/);
@@ -67,9 +68,11 @@ assert.match(aiSource, /\[404, 429, 500, 502, 503, 504\]\.includes\(response\.st
 assert.match(aiResilienceSource, /GROQ_MODEL=openai\/gpt-oss-120b/);
 assert.match(deploySyncSource, /transport_ready_streak >= 3/);
 assert.match(deploySyncSource, /deployed_whatsapp_reconnect_required/);
+assert.match(deploySyncSource, /existing_deployment_whatsapp_reconnect_required/);
 assert.match(guardianSource, /manualReconnectRequired/);
 assert.match(guardianSource, /restartable = bot_status in \{"unreachable", "degraded", "not_ready"\}/);
 assert.doesNotMatch(guardianSource, /maybe_restart_bot\(guardian_state, "stale_pending_conversations"/);
+assert.match(guardianServiceSource, /SuccessExitStatus=2 3/);
 assert.match(indexSource, /withSdrCustomerTurn\(clientId,phone,\(\)=>handleEc10ConversationInternal/);
 assert.doesNotMatch(indexSource, /:sdr_turn:\$\{sdrTurn\.turn\}/);
 assert.match(indexSource, /stage:\s*"awaiting_booking_completion"/);
@@ -98,7 +101,7 @@ assert.doesNotMatch(
 assert.match(whatsappPatchSource, /delete message\.__x_id/);
 
 console.log(JSON.stringify({
-  passed: positiveReplies.length + 37,
-  total: positiveReplies.length + 37,
+  passed: positiveReplies.length + 39,
+  total: positiveReplies.length + 39,
   noWhatsAppSent: true,
 }, null, 2));
