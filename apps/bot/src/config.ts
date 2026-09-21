@@ -45,6 +45,7 @@ const schema = z.object({
   WHATSAPP_MAX_OUTBOUND_PER_CONTACT_WINDOW: z.coerce.number().default(8),
   WHATSAPP_AUDIO_RATE_LIMIT_WINDOW_MINUTES: z.coerce.number().default(24 * 60),
   WHATSAPP_MAX_AUDIO_PER_CONTACT_WINDOW: z.coerce.number().default(4),
+  BOT_INBOUND_RESPONSE_GRACE_MS: z.coerce.number().int().min(0).max(60_000).default(8_000),
   BOT_OUTBOUND_ALLOWED_PREFIXES: z.string().default(""),
   BOT_TEST_ALLOWED_PHONES: z.string().default(""),
   BOT_AI_ENABLED: z.string().default("true"),

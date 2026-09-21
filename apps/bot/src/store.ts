@@ -1930,6 +1930,124 @@ export async function getClientAutomationStateById(clientId: string): Promise<Cl
   return (data?.[0] as ClientAutomationState | undefined) ?? null;
 }
 
+export async function pauseClientAutomationByPhone(input: {
+  phone: string;
+  reason: string;
+  tags?: string[];
+}): Promise<ClientAutomationState | null> {
+  const supabase = getSupabase();
+  const database = getDatabase();
+  const phone = normalizePhone(input.phone, config.BOT_DEFAULT_COUNTRY_CODE);
+  if (!phone || (!supabase && !database)) return null;
+  const tags = Array.from(new Set(["atendimento_humano_ativo", ...(input.tags ?? [])].filter(Boolean)));
+  const candidates = phoneLookupCandidates(phone);
+
+  if (database) {
+    const { rows } = await database.query<ClientAutomationState>(`
+      update ${botDbSchema}.clients
+      set bot_paused = true,
+          tags = (
+            select array(
+              select distinct value
+              from unnest(coalesce(${botDbSchema}.clients.tags, '{}') || $3::text[]) as merged(value)
+              where value is not null and value <> ''
+            )
+          ),
+          attribution_metadata = coalesce(attribution_metadata, '{}'::jsonb)
+            || jsonb_build_object('manual_takeover', jsonb_build_object(
+              'reason', $4::text,
+              'detectedAt', now()
+            )),
+          updated_at = now()
+      where id = (
+        select id from ${botDbSchema}.clients
+        where phone = any($1::text[]) and bot_instance_id = $2
+        order by updated_at desc limit 1
+      )
+      returning id, bot_instance_id, phone, name, bot_paused, tags,
+                source, service_interest, athlete_age, traffic_source,
+                utm_source, utm_campaign, fbclid, attribution_metadata
+    `, [candidates, currentBotInstanceId(), tags, input.reason]);
+    return rows[0] ?? null;
+  }
+
+  const current = await getClientAutomationStateByPhone(phone);
+  if (!current) return null;
+  const mergedTags = Array.from(new Set([...(current.tags ?? []), ...tags]));
+  const metadata = {
+    ...(current.attribution_metadata ?? {}),
+    manual_takeover: { reason: input.reason, detectedAt: new Date().toISOString() },
+  };
+  const { data, error } = await supabase!
+    .from("clients")
+    .update({ bot_paused: true, tags: mergedTags, attribution_metadata: metadata, updated_at: new Date().toISOString() })
+    .eq("id", current.id)
+    .select("id, bot_instance_id, phone, name, bot_paused, tags, source, service_interest, athlete_age, traffic_source, utm_source, utm_campaign, fbclid, attribution_metadata")
+    .single();
+  if (error) throw error;
+  return data as ClientAutomationState;
+}
+
+export async function isRecordedBotOutboundMessage(whatsappMessageId: string | null | undefined) {
+  const id = whatsappMessageId?.trim();
+  if (!id) return false;
+  const supabase = getSupabase();
+  const database = getDatabase();
+  if (!supabase && !database) return false;
+
+  if (database) {
+    const { rows } = await database.query<{ exists: boolean }>(`
+      select exists(
+        select 1 from ${botDbSchema}.messages
+        where bot_instance_id = $1 and direction = 'outbound' and whatsapp_message_id = $2
+      ) as exists
+    `, [currentBotInstanceId(), id]);
+    return Boolean(rows[0]?.exists);
+  }
+
+  const { data, error } = await supabase!
+    .from("messages")
+    .select("id")
+    .eq("bot_instance_id", currentBotInstanceId())
+    .eq("direction", "outbound")
+    .eq("whatsapp_message_id", id)
+    .limit(1);
+  if (error) throw error;
+  return Boolean(data?.length);
+}
+
+export async function isLatestInboundWhatsAppMessage(input: {
+  clientId: string;
+  whatsappMessageId: string | null | undefined;
+}) {
+  const id = input.whatsappMessageId?.trim();
+  if (!id) return true;
+  const supabase = getSupabase();
+  const database = getDatabase();
+  if (!supabase && !database) return true;
+
+  if (database) {
+    const { rows } = await database.query<{ whatsapp_message_id: string | null }>(`
+      select whatsapp_message_id
+      from ${botDbSchema}.messages
+      where client_id = $1 and bot_instance_id = $2 and direction = 'inbound'
+      order by created_at desc limit 1
+    `, [input.clientId, currentBotInstanceId()]);
+    return !rows[0]?.whatsapp_message_id || rows[0].whatsapp_message_id === id;
+  }
+
+  const { data, error } = await supabase!
+    .from("messages")
+    .select("whatsapp_message_id")
+    .eq("client_id", input.clientId)
+    .eq("bot_instance_id", currentBotInstanceId())
+    .eq("direction", "inbound")
+    .order("created_at", { ascending: false })
+    .limit(1);
+  if (error) throw error;
+  return !data?.[0]?.whatsapp_message_id || data[0].whatsapp_message_id === id;
+}
+
 export async function appendClientTags(clientId: string, tags: string[]) {
   const nextTags = tags.filter(Boolean);
   if (!nextTags.length) return;

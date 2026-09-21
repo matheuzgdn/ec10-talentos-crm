@@ -111,6 +111,8 @@ import {
   fetchEc10LearningBase,
   fetchBotLabWhatsappMessages,
   hasClientOutboundMessages,
+  isLatestInboundWhatsAppMessage,
+  isRecordedBotOutboundMessage,
   downloadWhatsappMedia,
   findMatchingRule,
   getBotRuntime,
@@ -123,6 +125,7 @@ import {
   getOrCreateBotLabWhatsappSession,
   markClientForFollowUp,
   markOutboundMessage,
+  pauseClientAutomationByPhone,
   recordOutboundChatMessage,
   recordIncomingWhatsAppCall,
   recordBotLabWhatsappMessage,
@@ -3607,6 +3610,7 @@ function automationSuppressionReason(clientState: ClientAutomationState) {
 
 function shouldRunWhatsAppAutomation(clientState: ClientAutomationState) {
   if (clientState.bot_instance_id !== config.BOT_INSTANCE_ID) return false;
+  if (clientState.bot_paused) return false;
   if (!isBotTestPhoneAllowed(clientState.phone)) return false;
   if (config.BOT_AI_MODE === "primary") return true;
   return hasTrafficSignal(clientState) || isDirectCareerWhatsAppEntry(clientState);
@@ -4871,6 +4875,8 @@ async function handleGustavoV2Oracle(
       }
     }
     if(result.booking) {
+      await updateClientAiProfile({clientId:clientState.id,automationPauseRequested:true});
+      await appendClientTags(clientState.id,["ia_atendimento_encerrado","reuniao_agendada"]);
       await recordTrafficEvent({
         clientId:clientState.id,phone:clientState.phone,eventType:"bot_meeting_scheduled",
         channel:"whatsapp",platform:"gustavo_v2",serviceInterest:"plano_carreira",
@@ -6768,6 +6774,35 @@ async function main() {
   };
   client.on('vote_update', (vote: any) => { void handlePollVote(vote); });
 
+  client.on("message_create", (message: any) => {
+    if (!isCurrentWhatsAppClient(client) || !message?.fromMe) return;
+    const target = String(message?.to ?? message?.id?.remote ?? "");
+    if (!target || target.includes("status@broadcast") || target.endsWith("@g.us")) return;
+    const messageId = repairWhatsAppMessageId(message) ?? message?.id?.id ?? null;
+    setTimeout(() => {
+      void (async () => {
+        if (await isRecordedBotOutboundMessage(messageId)) return;
+        const phone = await resolveInboundChatId(client, target);
+        const paused = await pauseClientAutomationByPhone({
+          phone,
+          reason: "Mensagem enviada manualmente no WhatsApp",
+          tags: ["pausa_por_atendimento_manual"],
+        });
+        if (!paused) return;
+        await recordTrafficEvent({
+          clientId: paused.id,
+          phone: paused.phone,
+          eventType: "bot_manual_takeover_detected",
+          channel: "whatsapp",
+          platform: "whatsapp",
+          metadata: { source: "message_create", messageId },
+        });
+      })().catch((error) => {
+        console.warn("Failed to register manual WhatsApp takeover", error instanceof Error ? error.message : String(error));
+      });
+    }, 1_500).unref();
+  });
+
   const recoverMissedInboundMessages = async () => {
     if (processingInboundRecovery || !isCurrentWhatsAppClient(client) || !whatsappReady || !isWhatsAppConnected()) return;
     const needsRecovery = startupInboundRecoveryPending || lastInboundPersistenceFailureAt > lastInboundRecoveryAt;
@@ -6829,6 +6864,17 @@ async function main() {
             return;
           }
           if (currentState.bot_paused) return;
+          const pauseReason = await getImmediateOutboundPauseReason();
+          if (pauseReason) {
+            await recordImmediateOutboundPaused({
+              clientId: currentState.id,
+              phone: currentState.phone,
+              mediaType: "text",
+              body: combinedBody,
+              reason: pauseReason,
+            });
+            return;
+          }
           await handleGustavoPrimaryRoute(
             client,
             latest.chatId,
@@ -6908,13 +6954,32 @@ async function main() {
       }
 
       if (clientState) {
+        if (config.BOT_INBOUND_RESPONSE_GRACE_MS > 0) {
+          await new Promise((resolve) => setTimeout(resolve, config.BOT_INBOUND_RESPONSE_GRACE_MS));
+        }
         await withConversationLock(clientState.phone, async () => {
-          if (!shouldRunWhatsAppAutomation(clientState)) {
-            await recordAutomationSuppressed(clientState, "inbound_message");
+          const currentState = await getClientAutomationStateById(clientState.id) ?? clientState;
+          if (!shouldRunWhatsAppAutomation(currentState)) {
+            await recordAutomationSuppressed(currentState, "inbound_message");
             return;
           }
 
-          if (clientState.bot_paused) return;
+          if (currentState.bot_paused) return;
+          if (!(await isLatestInboundWhatsAppMessage({
+            clientId: currentState.id,
+            whatsappMessageId: repairedMessageId ?? message.id?.id ?? null,
+          }))) return;
+          const pauseReason = await getImmediateOutboundPauseReason();
+          if (pauseReason) {
+            await recordImmediateOutboundPaused({
+              clientId: currentState.id,
+              phone: currentState.phone,
+              mediaType: mediaType === "audio" ? "audio" : "text",
+              body: messageBody,
+              reason: pauseReason,
+            });
+            return;
+          }
 
           if(config.BOT_AI_MODE!=='primary'&&shouldSendEc10Welcome(await hasClientOutboundMessages(clientState.id),messageBody)) {
             const welcomed=await sendBotText(client,message.from,clientState.id,ec10Messages.welcome,[700,1400]);
@@ -6923,7 +6988,7 @@ async function main() {
 
           if (config.BOT_AI_MODE === "primary") {
             await handleGustavoPrimaryRoute(
-              client,message.from,clientState,messageBody,mediaType,
+              client,message.from,currentState,messageBody,mediaType,
               repairedMessageId ?? message.id?.id ?? null,
             );
             return;
