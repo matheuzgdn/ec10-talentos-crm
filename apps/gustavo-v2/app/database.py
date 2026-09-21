@@ -461,7 +461,8 @@ class Database:
         booking["google_calendar_url"] = f"https://calendar.google.com/calendar/render?{params}"
         if booking.get("access_token"):
             booking["apple_calendar_url"] = (
-                f"https://ec10talentos.com/api/booking-calendar?id={booking['id']}&t={booking['access_token']}"
+                "https://cliente-whatsapp-crm.vercel.app/api/booking-calendar"
+                f"?id={booking['id']}&t={booking['access_token']}"
             )
         booking["local_label"] = start_value.astimezone(ZoneInfo("America/Sao_Paulo")).strftime("%d/%m/%Y às %H:%M")
         return booking

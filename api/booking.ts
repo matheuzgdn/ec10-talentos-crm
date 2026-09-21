@@ -8,7 +8,10 @@ import {bookingProgramLabel} from './_booking-label.js';
 
 type Service = "plano_carreira" | "plano_internacional" | "eurocamp";
 const services: Service[] = ["plano_carreira", "plano_internacional", "eurocamp"];
-const bookingPublicBaseUrl = "https://ec10talentos.com";
+// Calendar downloads are served by the CRM deployment. The institutional site
+// does not expose this API route and would return its HTML shell instead of an
+// .ics file.
+const bookingPublicBaseUrl = "https://cliente-whatsapp-crm.vercel.app";
 
 function serviceOf(value: unknown): Service {
   if (services.includes(value as Service)) return value as Service;

@@ -58,7 +58,7 @@ try {
   check((await db.query(`select athlete_video_url from whatsapp_bot.ec10_bookings where id=$1`,[reserved.result.booking.id])).rows[0].athlete_video_url===input.athleteVideoUrl);
   const queued=(await db.query(`select body,status,phone from whatsapp_bot.outbound_messages where client_id=$1 and created_at>=transaction_timestamp()`,[c.id])).rows;
   check(queued[0].phone==='12025550189');
-  check(queued.length===1);check(queued[0].status==='queued');check(queued[0].body.includes('Maria Oliveira'));check(queued[0].body.includes('Horário de Brasília'));check(queued[0].body.includes('Eurocamp'));check(queued[0].body.includes('Google Agenda: https://calendar.google.com/'));check(queued[0].body.includes('iPhone / Apple Calendar: https://ec10talentos.com/api/booking-calendar'));check(!queued[0].body.toLowerCase().includes('grupo'));
+  check(queued.length===1);check(queued[0].status==='queued');check(queued[0].body.includes('Maria Oliveira'));check(queued[0].body.includes('Horário de Brasília'));check(queued[0].body.includes('Eurocamp'));check(queued[0].body.includes('Google Agenda: https://calendar.google.com/'));check(queued[0].body.includes('iPhone / Apple Calendar: https://cliente-whatsapp-crm.vercel.app/api/booking-calendar'));check(!queued[0].body.toLowerCase().includes('grupo'));
   check((await db.query(`select stage from whatsapp_bot.bot_conversation_states where client_id=$1`,[c.id])).rows[0].stage==='completed');
   check((await db.query(`select data from public.tarefas where id=$1`,['booking-'+reserved.result.booking.id])).rows[0].data.videos===input.athleteVideoUrl);
   const repeat=await request('POST',input);check(repeat.status===201);check(repeat.result.booking.id===reserved.result.booking.id);check(repeat.result.replayed===true);
