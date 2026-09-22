@@ -1375,7 +1375,8 @@ export async function createBotBookingLink(input:{clientId:string;service:string
     const {error}=await supabase.from('ec10_bot_booking_links').insert({access_token_hash:hash,client_id:input.clientId,service:input.service,contact_name:input.name,contact_role:input.role});
     if(error)throw error;
   }
-  return `https://ec10talentos.com/agendar?servico=${input.service}&cadastro=${token}`;
+  const bookingBaseUrl = config.EC10_BOOKING_PUBLIC_BASE_URL.replace(/\/+$/, "");
+  return `${bookingBaseUrl}/agendar?servico=${input.service}&cadastro=${token}`;
 }
 
 export async function fetchPendingWhatsAppPolls(limit = 200, clientId?: string): Promise<PendingWhatsAppPoll[]> {

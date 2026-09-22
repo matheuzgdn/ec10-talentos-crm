@@ -81,6 +81,7 @@ const schema = z.object({
   GUSTAVO_V2_ORACLE_URL: z.string().url().optional(),
   GUSTAVO_V2_ORACLE_TIMEOUT_MS: z.coerce.number().int().min(1000).max(30000).default(12000),
   EC10_GOOGLE_MEET_URL: z.string().optional(),
+  EC10_BOOKING_PUBLIC_BASE_URL: z.string().url().default("https://cliente-whatsapp-crm.vercel.app"),
   EC10_SELLER_NAME: z.string().default("Igor Jardins"),
   EC10_SELLER_PHONE: z.string().default("+55 31 8233-1411"),
   EC10_INTERNATIONAL_SELLER_NAME: z.string().optional(),

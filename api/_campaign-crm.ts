@@ -52,7 +52,8 @@ export async function saveCampaignRegistration(db:any, input:any) {
     order by case when data->>'whatsapp_client_id'=$2 then 0 else 1 end,created_date limit 1 for update`,[orgId,client.id,phone])).rows[0];
   const crmLeadId=lead?.id||`wa-${client.id}`;
   const token=crypto.randomBytes(32).toString('base64url');
-  const bookingUrl=`https://ec10talentos.com/agendar?servico=${product.service}&cadastro=${token}`;
+  const bookingBaseUrl=(process.env.EC10_BOOKING_PUBLIC_BASE_URL||'https://cliente-whatsapp-crm.vercel.app').replace(/\/+$/,'');
+  const bookingUrl=`${bookingBaseUrl}/agendar?servico=${product.service}&cadastro=${token}`;
   const data={
     ...lead?.data,
     nome_atleta:lead?.data?.nome_atleta||name, nome_contato:name, telefone:phone,telefone_e164:phone,
