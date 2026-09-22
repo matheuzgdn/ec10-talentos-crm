@@ -62,3 +62,5 @@ __pycache__/
 .venv/
 .pytest_cache/
 supabase/.temp/
+.vercel
+.env*

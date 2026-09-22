@@ -23,7 +23,7 @@
       <p>No celular, abra <strong>Aparelhos conectados</strong> e leia o código. Ele é atualizado automaticamente.</p>
       <img id="qr" alt="QR Code atualizado do WhatsApp EC10" />
       <div id="status"><span id="dot"></span><span id="label">Aguardando leitura do QR</span></div>
-      <small>Não feche esta tela até aparecer “WhatsApp conectado”.</small>
+      <small>Use sempre o código que estiver visível agora. Não feche esta tela até aparecer “WhatsApp conectado”.</small>
     </main>
     <script>
       const qr=document.getElementById('qr');const card=document.getElementById('card');const label=document.getElementById('label');
@@ -34,7 +34,8 @@
           card.classList.remove('ready');label.textContent='Aguardando leitura do QR';
         }catch{label.textContent='Atualizando conexão…'}
       }
-      refreshQr();refreshStatus();setInterval(refreshQr,8000);setInterval(refreshStatus,4000);
+      qr.addEventListener('error',()=>setTimeout(refreshQr,1000));
+      refreshQr();refreshStatus();setInterval(refreshQr,3000);setInterval(refreshStatus,3000);
     </script>
   </body>
 </html>

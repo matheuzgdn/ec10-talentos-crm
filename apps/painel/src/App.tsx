@@ -2962,10 +2962,20 @@ function BotQrPanel({
   onRefresh: () => void;
 }) {
   const [qrFailed, setQrFailed] = useState(false);
+  const [liveQrVersion, setLiveQrVersion] = useState(Date.now());
 
   useEffect(() => {
     setQrFailed(false);
+    setLiveQrVersion(Date.now());
   }, [qrUrl, canShowQr, isReady]);
+
+  useEffect(() => {
+    if (isReady || !canShowQr) return;
+    const timer = window.setInterval(() => setLiveQrVersion(Date.now()), 3000);
+    return () => window.clearInterval(timer);
+  }, [canShowQr, isReady]);
+
+  const liveQrUrl = qrUrl.replace(/([?&])t=\d+/, `$1t=${liveQrVersion}`);
 
   if (isReady) {
     return (
@@ -2979,9 +2989,14 @@ function BotQrPanel({
   if (canShowQr || !qrFailed) {
     return (
       <div className="qr-live">
-        <img src={qrUrl} alt={`QR Code para conectar ${instance.label}`} onError={() => setQrFailed(true)} />
+        <img
+          src={liveQrUrl}
+          alt={`QR Code para conectar ${instance.label}`}
+          onLoad={() => setQrFailed(false)}
+          onError={() => setQrFailed(true)}
+        />
         <strong>Escaneie o QR Code no WhatsApp</strong>
-        <span>Se nao carregar, clique em atualizar status.</span>
+        <span>O código é renovado automaticamente. Escaneie assim que ele aparecer.</span>
         <button type="button" onClick={onRefresh}>Atualizar status</button>
       </div>
     );
