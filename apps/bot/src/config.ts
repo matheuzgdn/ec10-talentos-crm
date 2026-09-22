@@ -9,6 +9,7 @@ loadEnv({ quiet: true });
 
 const schema = z.object({
   BOT_ENABLED: z.string().default("false"),
+  BOT_TRANSPORT_DIAGNOSTIC_ONLY: z.string().default("false"),
   BOT_INSTANCE_ID: z.string().default("main"),
   BOT_INSTANCE_LABEL: z.string().default("WhatsApp principal"),
   BOT_SESSION_PATH: z.string().default("./whatsapp-session"),

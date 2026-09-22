@@ -6552,6 +6552,7 @@ async function main() {
   console.log(`Direct database config: ${hasDirectDatabaseConfig ? "ok" : "missing"}`);
   console.log(`BOT_INSTANCE_ID=${config.BOT_INSTANCE_ID}`);
   console.log(`BOT_ENABLED=${config.BOT_ENABLED}`);
+  console.log(`BOT_TRANSPORT_DIAGNOSTIC_ONLY=${config.BOT_TRANSPORT_DIAGNOSTIC_ONLY}`);
   console.log(`BOT_TEST_ISOLATION=${botTestAllowedPhones.size?'active':'off'}`);
   startStatusServer();
   await writeStatus("booting", {
@@ -6646,9 +6647,11 @@ async function main() {
     writeStatus("ready", {
       clientGeneration,
       state: currentWhatsAppState,
+      diagnosticOnly: config.BOT_TRANSPORT_DIAGNOSTIC_ONLY === "true",
       safeModeUntil: whatsappSafeModeUntilMs ? new Date(whatsappSafeModeUntilMs).toISOString() : null,
       safeModeReason: whatsappSafeModeReason
     }).catch((error) => console.error("Failed to write ready status", error));
+    if (config.BOT_TRANSPORT_DIAGNOSTIC_ONLY === "true") return;
     const now = Date.now();
     if (now - lastReadyMaintenanceAt < config.WHATSAPP_HEAVY_OPS_COOLDOWN_MS) return;
     lastReadyMaintenanceAt = now;
@@ -6694,6 +6697,7 @@ async function main() {
 
   client.on("message_ack", async (message: any, ack: number) => {
     try {
+      if (config.BOT_TRANSPORT_DIAGNOSTIC_ONLY === "true") return;
       if (!isCurrentWhatsAppClient(client)) return;
       const whatsappMessageId = getWhatsAppMessageId(message);
       if (!whatsappMessageId) return;
@@ -6712,6 +6716,7 @@ async function main() {
 
   client.on("call", async (call: any) => {
     try {
+      if (config.BOT_TRANSPORT_DIAGNOSTIC_ONLY === "true") return;
       if (!isCurrentWhatsAppClient(client) || call?.fromMe || call?.isGroup || !call?.from) return;
       const resolvedPhone = await resolveInboundChatId(client, call.from);
       const timestamp = Number(call.timestamp);
@@ -6731,6 +6736,7 @@ async function main() {
 
   const handlePollVote = async (vote: any, source: 'event' | 'recovery' = 'event') => {
     try {
+      if (config.BOT_TRANSPORT_DIAGNOSTIC_ONLY === "true") return;
       if (!isCurrentWhatsAppClient(client)) return;
       let normalized = normalizePollVote(vote);
       if (!normalized.names.length && pollParentId(vote)) {
@@ -6785,6 +6791,7 @@ async function main() {
   client.on('vote_update', (vote: any) => { void handlePollVote(vote); });
 
   client.on("message_create", (message: any) => {
+    if (config.BOT_TRANSPORT_DIAGNOSTIC_ONLY === "true") return;
     if (!isCurrentWhatsAppClient(client) || !message?.fromMe) return;
     const target = String(message?.to ?? message?.id?.remote ?? "");
     if (!target || target.includes("status@broadcast") || target.endsWith("@g.us")) return;
@@ -6913,6 +6920,7 @@ async function main() {
 
   client.on("message", async (message: any) => {
     try {
+      if (config.BOT_TRANSPORT_DIAGNOSTIC_ONLY === "true") return;
       if (!isCurrentWhatsAppClient(client)) return;
       if (message.fromMe) return;
       if (String(message.from ?? "").includes("status@broadcast")) return;
@@ -7036,6 +7044,26 @@ async function main() {
 
   await client.initialize();
 
+  client.pupPage?.on("framenavigated", (frame: any) => {
+    try {
+      const url = new URL(frame.url());
+      if (url.hostname.endsWith("whatsapp.com") && url.searchParams.has("post_logout")) {
+        console.warn("WhatsApp Web navigated to post-logout", {
+          reason: url.searchParams.get("logout_reason") ?? "unspecified"
+        });
+      }
+    } catch { /* Ignore browser-internal frames. */ }
+  });
+  client.pupPage?.on("pageerror", (value: unknown) => {
+    const error = value instanceof Error ? value : new Error(String(value));
+    console.warn("WhatsApp Web page error", error.name, error.message.slice(0, 240));
+  });
+
+  if (config.BOT_TRANSPORT_DIAGNOSTIC_ONLY === "true") {
+    console.log("Transport-only diagnostic mode: inbound processing and outbound jobs are disabled.");
+    return;
+  }
+
   setTimeout(() => { void recoverMissedInboundMessages(); }, 8_000).unref();
   setInterval(() => { void recoverMissedInboundMessages(); }, 60_000);
 
@@ -7043,6 +7071,8 @@ async function main() {
     if (processingPollRecovery || !isCurrentWhatsAppClient(client) || !whatsappReady || currentBotStatus!=='ready' || !isWhatsAppConnected()) return;
     processingPollRecovery = true;
     try {
+      const control = await readBotRuntimeControl();
+      if (!control.heavyWhatsAppOpsEnabled || control.pauseReason || getReadyAgeMs() < config.WHATSAPP_HEAVY_OPS_MIN_READY_MS) return;
       const pending = await fetchPendingWhatsAppPolls();
       const activeIds = new Set(pending.map(p=>p.whatsapp_message_id));
       for (const id of pollRecoveryCheckedAt.keys()) if (!activeIds.has(id)) pollRecoveryCheckedAt.delete(id);
