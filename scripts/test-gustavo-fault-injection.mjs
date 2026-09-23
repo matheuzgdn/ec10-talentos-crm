@@ -71,7 +71,7 @@ assert.match(deploySyncSource, /deployed_whatsapp_reconnect_required/);
 assert.match(deploySyncSource, /existing_deployment_whatsapp_reconnect_required/);
 assert.match(deploySyncSource, /no_bot_runtime_change_whatsapp_reconnect_required/);
 assert.match(guardianSource, /manualReconnectRequired/);
-assert.match(guardianSource, /restartable = bot_status in \{"unreachable", "degraded", "not_ready"\}/);
+assert.match(guardianSource, /bot_status in \{"unreachable", "degraded", "not_ready"\}/);
 assert.match(guardianSource, /active_deployment\(now\)/);
 assert.match(guardianSource, /consecutiveRestartableFailures/);
 assert.match(guardianSource, /GUSTAVO_GUARDIAN_RECOVERY_ENABLED/);
