@@ -58,4 +58,6 @@ DEFAULT_STATE = {
     "booking_id": None,
     "booking_starts_at": None,
     "booking_seller": None,
+    "language": "pt",
+    "route_key": "career",
 }

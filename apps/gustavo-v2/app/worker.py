@@ -40,6 +40,23 @@ class Worker:
         allowed = self.settings.allowed_phones
         return self.settings.gustavo_v2_enabled and (not allowed or phone in allowed)
 
+    @staticmethod
+    def _commercial_route(state: dict) -> tuple[str, str, str]:
+        language = "es" if state.get("language") == "es" else "pt"
+        age = state.get("athlete_age")
+        if language == "es":
+            route_key = "es"
+        elif isinstance(age, int) and age >= 18:
+            route_key = "international"
+        else:
+            route_key = "career"
+        if isinstance(age, int) and age >= 18:
+            service = "plano_internacional"
+        else:
+            candidate = state.get("service_interest")
+            service = candidate if candidate in {"plano_carreira", "eurocamp"} else "plano_carreira"
+        return language, route_key, service
+
     async def _finish_oracle_schedule(self, phone: str, message_id: str, inbound: str,
                                       before: dict, after: dict, reply: str,
                                       poll: dict | None = None, booking: dict | None = None,
@@ -53,8 +70,13 @@ class Worker:
                 "id": str(booking["id"]),
                 "starts_at": booking["starts_at"].isoformat(),
                 "seller_name": booking["display_name"],
+                "service": booking.get("service", after.get("service_interest")),
+                "route_key": booking.get("route_key", after.get("route_key")),
             } if booking else None),
             "athlete_age": after.get("athlete_age"),
+            "athlete_name": after.get("athlete_name"),
+            "service_interest": after.get("service_interest"),
+            "route_key": after.get("route_key"),
             "stage": after.get("stage"),
             "model": "gustavo-scheduler",
         }
@@ -66,7 +88,8 @@ class Worker:
 
     async def oracle_turn(self, phone: str, message_id: str, inbound: str, client_id: str,
                           known_name: str | None = None, known_age: int | None = None,
-                          lead_source: str | None = None, service_interest: str | None = None) -> dict:
+                          lead_source: str | None = None, service_interest: str | None = None,
+                          language: str | None = None, route_key: str | None = None) -> dict:
         """Generate one idempotent Gustavo V2 decision for the local Oracle WhatsApp transport."""
         lock = self.oracle_locks.setdefault(phone, asyncio.Lock())
         async with lock:
@@ -83,6 +106,13 @@ class Worker:
                 before["lead_source"] = lead_source[:120]
             if service_interest in {"plano_carreira", "plano_internacional", "eurocamp"}:
                 before["service_interest"] = service_interest
+            if language in {"pt", "es"}:
+                before["language"] = language
+            if route_key in {"career", "international", "es"}:
+                before["route_key"] = route_key
+
+            language, route_key, routed_service = self._commercial_route(before)
+            before.update({"language": language, "route_key": route_key, "service_interest": routed_service})
 
             stage = before.get("stage")
             if stage not in {"rapport", "discovery", "fit", "guardian", "offer", "booking", "waiting_booking", "human"}:
@@ -103,41 +133,44 @@ class Worker:
                     })
                     return await self._finish_oracle_schedule(
                         phone, message_id, inbound, before, after,
-                        "Certo. Agora escolha o horário abaixo.", time_poll(selected),
+                        ("Listo. Ahora elige el horario." if language == "es" else "Certo. Agora escolha o horário abaixo."),
+                        time_poll(selected, language),
                     )
                 if action == "next_week":
                     latest = max((datetime.fromisoformat(str(item["starts_at"]).replace("Z", "+00:00"))
                                   for item in options), default=None)
                     new_options = await self.db.list_chat_booking_days(
-                        "plano_carreira", latest + timedelta(seconds=1) if latest else None,
-                    )
+                        routed_service, route_key, latest + timedelta(seconds=1) if latest else None)
                     after = dict(observed)
                     after.update({"stage": "waiting_booking", "chat_booking_stage": "day",
                                   "chat_booking_options": new_options, "chat_booking_selected": None,
                                   "booking_url": None})
                     return await self._finish_oracle_schedule(
                         phone, message_id, inbound, before, after,
-                        "Aqui estão as próximas datas disponíveis.", day_poll(new_options),
+                        ("Estas son las próximas fechas disponibles." if language == "es" else "Aqui estão as próximas datas disponíveis."),
+                        day_poll(new_options, language),
                     )
                 if is_schedule_like(inbound):
                     return await self._finish_oracle_schedule(
                         phone, message_id, inbound, before, observed,
-                        "Escolha uma das datas disponíveis na caixa abaixo.", day_poll(options),
+                        ("Elige una de las fechas disponibles." if language == "es" else "Escolha uma das datas disponíveis na caixa abaixo."),
+                        day_poll(options, language),
                         validation={"scheduler": True, "invalid_day_choice": True},
                     )
-                pending_poll = day_poll(options)
+                pending_poll = day_poll(options, language)
             elif schedule_stage == "time":
                 selected = before.get("chat_booking_selected") or {}
                 action = parse_time_choice(inbound)
                 if action == "back":
-                    options = await self.db.list_chat_booking_days("plano_carreira")
+                    options = await self.db.list_chat_booking_days(routed_service, route_key)
                     after = dict(observed)
                     after.update({"stage": "waiting_booking", "chat_booking_stage": "day",
                                   "chat_booking_options": options, "chat_booking_selected": None,
                                   "booking_url": None})
                     return await self._finish_oracle_schedule(
                         phone, message_id, inbound, before, after,
-                        "Sem problema. Escolha outro dia abaixo.", day_poll(options),
+                        ("Sin problema. Elige otro día." if language == "es" else "Sem problema. Escolha outro dia abaixo."),
+                        day_poll(options, language),
                     )
                 if action == "confirm":
                     try:
@@ -147,14 +180,14 @@ class Worker:
                     except ValueError as exc:
                         if str(exc) not in {"booking_option_taken", "booking_option_invalid"}:
                             raise
-                        options = await self.db.list_chat_booking_days("plano_carreira")
+                        options = await self.db.list_chat_booking_days(routed_service, route_key)
                         after = dict(observed)
                         after.update({"stage": "waiting_booking", "chat_booking_stage": "day",
                                       "chat_booking_options": options, "chat_booking_selected": None})
                         return await self._finish_oracle_schedule(
                             phone, message_id, inbound, before, after,
                             "Esse horário acabou de ser ocupado. Separei as próximas datas disponíveis.",
-                            day_poll(options), validation={"scheduler": True, "slot_race_recovered": True},
+                            day_poll(options, language), validation={"scheduler": True, "slot_race_recovered": True},
                         )
                     after = dict(observed)
                     after.update({
@@ -165,15 +198,16 @@ class Worker:
                     })
                     return await self._finish_oracle_schedule(
                         phone, message_id, inbound, before, after,
-                        booking_confirmation(booking), booking=booking,
+                        booking_confirmation(booking, language), booking=booking,
                     )
                 if is_schedule_like(inbound):
                     return await self._finish_oracle_schedule(
                         phone, message_id, inbound, before, observed,
-                        "Para confirmar sem erro, escolha uma opção abaixo.", time_poll(selected),
+                        ("Para confirmar sin errores, elige una opción." if language == "es" else "Para confirmar sem erro, escolha uma opção abaixo."),
+                        time_poll(selected, language),
                         validation={"scheduler": True, "invalid_time_choice": True},
                     )
-                pending_poll = time_poll(selected)
+                pending_poll = time_poll(selected, language)
 
             decision, latency, generation_errors = await self.ai.decide(observed, history, inbound)
             route_model = next((entry.split(":", 1)[1] for entry in generation_errors if entry.startswith("ai_route:")),
@@ -188,9 +222,9 @@ class Worker:
             expected_audio = None
             if isinstance(age, int) and 8 <= age <= 13:
                 expected_audio = "eric_8_13"
-            elif isinstance(age, int) and 14 <= age <= 18:
+            elif isinstance(age, int) and 14 <= age < 18:
                 expected_audio = "eric_14_18"
-            elif isinstance(age, int) and 20 <= age <= 25:
+            elif isinstance(age, int) and age >= 18:
                 expected_audio = "eric_20_25"
             if audio_key in set(after.get("audio_sent") or []):
                 audio_key = None
@@ -201,7 +235,7 @@ class Worker:
             audio_required = bool(
                 expected_audio
                 and expected_audio not in set(after.get("audio_sent") or [])
-                and after.get("service_interest") == "plano_carreira"
+                and after.get("service_interest") in {"plano_carreira", "plano_internacional"}
                 and after.get("contact_name")
                 and after.get("athlete_name")
                 and (
@@ -213,8 +247,9 @@ class Worker:
             if audio_required and not audio_key:
                 audio_key = expected_audio
                 reply = (
-                    "Antes da agenda, vou te enviar agora o áudio do Eric Cena "
-                    "explicando o Plano de Carreira para essa fase."
+                    (("Antes de abrir la agenda, te envío ahora un audio de Eric Cena explicando el camino recomendado."
+                      if language == "es" else
+                      "Antes da agenda, vou te enviar agora o áudio do Eric Cena explicando o caminho indicado para essa fase."))
                 )
 
             explicit_booking_request = bool(re.search(
@@ -236,18 +271,17 @@ class Worker:
             booking_url = None
             poll = pending_poll
             if booking_allowed and (stored_client_id or client_id):
-                service = after.get("service_interest")
-                if service not in {"plano_carreira", "plano_internacional", "eurocamp"}:
-                    service = "plano_carreira"
-                if service == "plano_carreira":
-                    options = await self.db.list_chat_booking_days(service)
-                    if not options:
-                        raise RuntimeError("chat_booking_no_available_days")
-                    after.update({"booking_url": None, "stage": "waiting_booking",
-                                  "chat_booking_stage": "day", "chat_booking_options": options,
-                                  "chat_booking_selected": None})
-                    poll = day_poll(options)
-                    reply = "Vou deixar os dias disponíveis logo abaixo para você escolher."
+                language, route_key, service = self._commercial_route(after)
+                options = await self.db.list_chat_booking_days(service, route_key)
+                if not options:
+                    raise RuntimeError("chat_booking_no_available_days")
+                after.update({"booking_url": None, "stage": "waiting_booking", "language": language,
+                              "route_key": route_key, "service_interest": service,
+                              "chat_booking_stage": "day", "chat_booking_options": options,
+                              "chat_booking_selected": None})
+                poll = day_poll(options, language)
+                reply = ("Te dejo abajo los días disponibles para que elijas."
+                         if language == "es" else "Vou deixar os dias disponíveis logo abaixo para você escolher.")
             elif booking_requested and gate_reason:
                 after["stage"] = "guardian" if gate_reason == "responsavel_nao_confirmado" else after.get("stage", "offer")
             if pending_poll and not booking_allowed:
@@ -263,6 +297,9 @@ class Worker:
                 "poll": poll,
                 "booking": None,
                 "athlete_age": after.get("athlete_age"),
+                "athlete_name": after.get("athlete_name"),
+                "service_interest": after.get("service_interest"),
+                "route_key": after.get("route_key"),
                 "stage": after.get("stage"),
                 "model": route_model,
             }
@@ -330,9 +367,9 @@ class Worker:
             expected_audio = None
             if isinstance(age, int) and 8 <= age <= 13:
                 expected_audio = "eric_8_13"
-            elif isinstance(age, int) and 14 <= age <= 18:
+            elif isinstance(age, int) and 14 <= age < 18:
                 expected_audio = "eric_14_18"
-            elif isinstance(age, int) and 20 <= age <= 25:
+            elif isinstance(age, int) and age >= 18:
                 expected_audio = "eric_20_25"
             if audio_key in set(after.get("audio_sent") or []):
                 audio_key = None

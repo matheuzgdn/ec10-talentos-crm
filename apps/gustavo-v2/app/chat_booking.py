@@ -16,24 +16,25 @@ def _choice_number(value: str) -> Optional[int]:
     return int(match.group(1)) if match else None
 
 
-def day_poll(options: list[dict]) -> dict:
+def day_poll(options: list[dict], language: str = "pt") -> dict:
     poll_options = [
         f"{option['weekday_label']}, {option['date_label']} · {option['display_name']}"
         for option in options
     ]
-    poll_options.append("Prefiro as datas da semana seguinte")
+    poll_options.append("Prefiero fechas de la semana siguiente" if language == "es" else "Prefiro as datas da semana seguinte")
     return {
         "kind": "meeting_day",
-        "question": "Qual é o melhor dia para nossa reunião?",
+        "question": "¿Qué día es mejor para nuestra reunión?" if language == "es" else "Qual é o melhor dia para nossa reunião?",
         "options": poll_options,
     }
 
 
-def time_poll(option: dict) -> dict:
+def time_poll(option: dict, language: str = "pt") -> dict:
     return {
         "kind": "meeting_time",
-        "question": f"Para {option['weekday_label']}, {option['date_label']}, qual opção fica melhor?",
-        "options": ["20:00", "Voltar e escolher outro dia"],
+        "question": (f"Para el {option['date_label']}, ¿qué opción te queda mejor?" if language == "es"
+                     else f"Para {option['weekday_label']}, {option['date_label']}, qual opção fica melhor?"),
+        "options": ["20:00", "Volver y elegir otro día" if language == "es" else "Voltar e escolher outro dia"],
     }
 
 
@@ -42,7 +43,8 @@ def parse_day_choice(inbound: str, options: list[dict]) -> tuple[str, Optional[d
     text = _plain(inbound)
     number = _choice_number(inbound)
     if number == len(options) + 1 or any(
-        phrase in text for phrase in ("semana seguinte", "outra semana", "proxima semana", "nenhuma dessas")
+        phrase in text for phrase in ("semana seguinte", "outra semana", "proxima semana", "nenhuma dessas",
+                                    "semana siguiente", "otra semana", "ninguna de esas")
     ):
         return "next_week", None
     if number and 1 <= number <= len(options):
@@ -63,7 +65,7 @@ def parse_day_choice(inbound: str, options: list[dict]) -> tuple[str, Optional[d
 def parse_time_choice(inbound: str) -> str:
     text = _plain(inbound)
     number = _choice_number(inbound)
-    if number == 2 or any(phrase in text for phrase in ("voltar", "outro dia", "mudar dia")):
+    if number == 2 or any(phrase in text for phrase in ("voltar", "outro dia", "mudar dia", "volver", "otro dia", "cambiar dia")):
         return "back"
     if number == 1 or re.search(r"(?:^|\b)20(?::?00|h)?(?:\b|$)", text):
         return "confirm"
@@ -75,11 +77,12 @@ def is_schedule_like(inbound: str) -> bool:
     return bool(
         _choice_number(inbound)
         or re.search(r"\b(?:segunda|terca|quarta|quinta|sexta|sabado|domingo|20h|20:00)\b", text)
-        or any(phrase in text for phrase in ("outra semana", "semana seguinte", "outro dia", "voltar"))
+        or any(phrase in text for phrase in ("outra semana", "semana seguinte", "outro dia", "voltar",
+                                             "otra semana", "semana siguiente", "otro dia", "volver"))
     )
 
 
-def booking_confirmation(booking: dict) -> str:
+def booking_confirmation(booking: dict, language: str = "pt") -> str:
     starts_at = booking.get("starts_at")
     local_value = str(booking.get("local_label") or "")
     if not local_value and isinstance(starts_at, datetime):
@@ -87,10 +90,13 @@ def booking_confirmation(booking: dict) -> str:
     if not local_value:
         local_value = "horário confirmado"
     seller = str(booking.get("display_name") or booking.get("seller_name") or "equipe EC10")
-    lines = [
-        f"Sua reunião do Plano de Carreira ficou confirmada para {local_value}, com {seller}.",
-        "O horário é o de Brasília e a confirmação já está salva na agenda da EC10.",
-    ]
+    service = str(booking.get("service") or "plano_carreira")
+    label = {"plano_carreira": "Plano de Carreira", "plano_internacional": "Plano Internacional", "eurocamp": "Eurocamp"}.get(service, "EC10")
+    lines = ([f"Tu reunión de {label} quedó confirmada para el {local_value}, con {seller}.",
+              "El horario corresponde a Brasilia y la confirmación ya está guardada en la agenda de EC10."]
+             if language == "es" else
+             [f"Sua reunião de {label} ficou confirmada para {local_value}, com {seller}.",
+              "O horário é o de Brasília e a confirmação já está salva na agenda da EC10."])
     if booking.get("google_calendar_url"):
         lines.extend(["", f"Google Agenda: {booking['google_calendar_url']}"])
     if booking.get("apple_calendar_url"):

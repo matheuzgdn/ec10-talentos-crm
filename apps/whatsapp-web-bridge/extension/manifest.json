@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "EC10 Gustavo — WhatsApp local",
+  "version": "1.0.0",
+  "description": "Ponte local antifalhas entre o WhatsApp Web comercial, Gustavo e o CRM EC10.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://web.whatsapp.com/*", "http://127.0.0.1:3219/*"],
+  "content_scripts": [{
+    "matches": ["https://web.whatsapp.com/*"],
+    "js": ["content.js"],
+    "css": ["content.css"],
+    "run_at": "document_idle"
+  }],
+  "action": { "default_title": "Gustavo EC10", "default_popup": "popup.html" }
+}

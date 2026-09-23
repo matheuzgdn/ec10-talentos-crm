@@ -57,9 +57,9 @@ class GeminiSDR:
             expected = None
             if isinstance(age, int) and 8 <= age <= 13:
                 expected = "eric_8_13"
-            elif isinstance(age, int) and 14 <= age <= 18:
+            elif isinstance(age, int) and 14 <= age < 18:
                 expected = "eric_14_18"
-            elif isinstance(age, int) and 20 <= age <= 25:
+            elif isinstance(age, int) and age >= 18:
                 expected = "eric_20_25"
             if expected != decision.audio_key or decision.audio_key in audio_sent:
                 errors.append("audio_inadequado_ou_repetido")
@@ -69,7 +69,8 @@ class GeminiSDR:
                 errors.append("agenda_sem_idade")
             if isinstance(age, int) and age < 18 and (not candidate.get("guardian_confirmed") or candidate.get("contact_role") != "responsavel"):
                 errors.append("agenda_sem_responsavel")
-            if isinstance(age, int) and 8 <= age <= 18 and not audio_sent:
+            expected_audio = "eric_20_25" if isinstance(age, int) and age >= 18 else ("eric_14_18" if isinstance(age, int) and age >= 14 else "eric_8_13")
+            if isinstance(age, int) and 8 <= age <= 25 and expected_audio not in audio_sent:
                 errors.append("agenda_antes_do_audio")
             if not candidate.get("meeting_interest"):
                 errors.append("agenda_sem_interesse")

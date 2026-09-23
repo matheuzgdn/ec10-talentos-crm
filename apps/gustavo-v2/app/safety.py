@@ -154,8 +154,17 @@ def merge_state(previous: dict, decision: Decision, inbound: str = "") -> dict:
         state[key] = value
     if state.get("contact_role") == "atleta" and state.get("contact_name") and not state.get("athlete_name"):
         state["athlete_name"] = state["contact_name"]
-    if isinstance(state.get("athlete_age"), int) and 8 <= state["athlete_age"] <= 18:
-        state["service_interest"] = "plano_carreira"
+    if isinstance(state.get("athlete_age"), int):
+        if state["athlete_age"] >= 18:
+            state["service_interest"] = "plano_internacional"
+            if state.get("language") != "es":
+                state["route_key"] = "international"
+        elif 8 <= state["athlete_age"] < 18:
+            state["service_interest"] = "plano_carreira"
+            if state.get("language") != "es":
+                state["route_key"] = "career"
+    if state.get("language") == "es":
+        state["route_key"] = "es"
     if state.get("contact_role") == "atleta" and isinstance(state.get("athlete_age"), int) and state["athlete_age"] < 18:
         state["guardian_confirmed"] = False
     state["stage"] = "waiting_booking" if previous.get("stage") == "waiting_booking" else decision.stage
@@ -179,7 +188,8 @@ def booking_gate(state: dict, requested: bool) -> tuple[bool, Optional[str]]:
         return False, "nome_contato_ausente"
     if age < 18 and (not state.get("guardian_confirmed") or state.get("contact_role") != "responsavel"):
         return False, "responsavel_nao_confirmado"
-    if 8 <= age <= 18 and not state.get("audio_sent"):
+    expected_audio = "eric_20_25" if age >= 18 else ("eric_14_18" if age >= 14 else "eric_8_13")
+    if 8 <= age <= 25 and expected_audio not in set(state.get("audio_sent") or []):
         return False, "audio_eric_nao_enviado"
     if not state.get("meeting_interest"):
         return False, "interesse_reuniao_ausente"

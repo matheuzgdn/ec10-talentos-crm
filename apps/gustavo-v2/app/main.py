@@ -35,6 +35,8 @@ class OracleTurnRequest(BaseModel):
     known_age: Optional[int] = Field(default=None, ge=6, le=40)
     lead_source: Optional[str] = Field(default=None, max_length=120)
     service_interest: Optional[str] = Field(default=None, max_length=80)
+    language: Optional[Literal["pt", "es"]] = None
+    route_key: Optional[Literal["career", "international", "es"]] = None
 
 
 class OracleAudioDeliveredRequest(BaseModel):

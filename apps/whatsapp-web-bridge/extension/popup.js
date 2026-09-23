@@ -1,0 +1,1 @@
+const input=document.querySelector('#existing');chrome.storage.local.get({includeExisting:false},value=>input.checked=Boolean(value.includeExisting));input.addEventListener('change',()=>chrome.storage.local.set({includeExisting:input.checked}));

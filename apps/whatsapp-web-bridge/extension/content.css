@@ -1,0 +1,1 @@
+#ec10-bridge-status{position:fixed;right:14px;bottom:72px;z-index:999999;background:#0b1724;color:#dff8ff;border:1px solid #1bc7aa;border-radius:12px;padding:8px 11px;font:12px system-ui;box-shadow:0 6px 24px #0008;pointer-events:none}#ec10-bridge-status[data-state="error"]{border-color:#ff6c6c}#ec10-bridge-status[data-state="working"]{border-color:#ffd15c}

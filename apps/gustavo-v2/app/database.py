@@ -318,12 +318,13 @@ class Database:
         return f"https://ec10talentos.com/agendar?servico={service}&cadastro={token}"
 
     async def list_chat_booking_days(self, service: str = "plano_carreira",
+                                     route_key: str = "career",
                                      after: Optional[datetime] = None) -> list[dict]:
         """Return only real, conflict-free occurrences from the approved commercial rota."""
         async with await self.connect() as conn:
             rows = await (await conn.execute(
-                "select * from whatsapp_bot.ec10_chat_booking_options(%s,%s)",
-                (service, after),
+                "select * from whatsapp_bot.ec10_chat_booking_options_routed(%s,%s,%s)",
+                (service, route_key, after),
             )).fetchall()
             result: list[dict] = []
             for row in rows:
@@ -342,7 +343,8 @@ class Database:
         """Atomically reserve the chat-selected time and mirror it to the CRM agenda."""
         token = secrets.token_urlsafe(32)
         digest = hashlib.sha256(token.encode()).hexdigest()
-        service = "plano_carreira"
+        service = str(option.get("service") or state.get("service_interest") or "plano_carreira")
+        route_key = str(option.get("route_key") or state.get("route_key") or "career")
         age = int(state.get("athlete_age") or 0)
         role = "responsavel" if age < 18 or state.get("contact_role") == "responsavel" else "atleta"
         name = " ".join(str(state.get("contact_name") or "").split()).strip()[:100]
@@ -362,11 +364,11 @@ class Database:
                     from whatsapp_bot.ec10_bookings b
                     join whatsapp_bot.sellers s on s.id=b.seller_id
                     left join public.profiles p on p.auth_user_id=s.auth_user_id or lower(p.email)=lower(s.email)
-                    left join whatsapp_bot.ec10_chat_booking_schedule r on r.seller_id=b.seller_id
-                      and r.service=b.service and r.iso_weekday=extract(isodow from b.starts_at at time zone 'America/Sao_Paulo')
+                    left join whatsapp_bot.ec10_chat_booking_routes r on r.seller_id=b.seller_id
+                      and r.route_key=%s and r.iso_weekday=extract(isodow from b.starts_at at time zone 'America/Sao_Paulo')
                     where b.client_id=%s and b.status='confirmed' and b.starts_at>now()
                     order by b.starts_at limit 1 for update of b
-                """, (client_id,))).fetchone()
+                """, (route_key, client_id,))).fetchone()
                 if existing:
                     booking = dict(existing)
                     booking["replayed"] = True
@@ -374,13 +376,13 @@ class Database:
                     schedule = await (await conn.execute("""
                         select r.seller_id,r.display_name,
                           (%s::timestamptz at time zone 'America/Sao_Paulo')::date local_date
-                        from whatsapp_bot.ec10_chat_booking_schedule r
+                        from whatsapp_bot.ec10_chat_booking_routes r
                         join whatsapp_bot.sellers s on s.id=r.seller_id and s.active
-                        where r.enabled and r.service=%s and r.seller_id=%s
+                        where r.enabled and r.route_key=%s and r.seller_id=%s
                           and r.iso_weekday=extract(isodow from %s::timestamptz at time zone 'America/Sao_Paulo')
                           and r.local_time=(%s::timestamptz at time zone 'America/Sao_Paulo')::time
                         for update of r
-                    """, (starts_at, service, seller_id, starts_at, starts_at))).fetchone()
+                    """, (starts_at, route_key, seller_id, starts_at, starts_at))).fetchone()
                     if not schedule or starts_at <= datetime.now(timezone.utc):
                         raise ValueError("booking_option_invalid")
                     ends_at = starts_at + timedelta(hours=1)
@@ -423,9 +425,9 @@ class Database:
                     await conn.execute("""
                         update whatsapp_bot.clients set name=coalesce(nullif(name,''),%s),status='orcamento',
                           service_interest=%s,assigned_seller_id=%s,
-                          tags=array(select distinct unnest(coalesce(tags,'{}')||array['reuniao_agendada','plano_carreira'])),
+                          tags=array(select distinct unnest(coalesce(tags,'{}')||array['reuniao_agendada',%s])),
                           updated_at=now() where id=%s
-                    """, (name, service, seller_id, client_id))
+                    """, (name, service, seller_id, service, client_id))
                     await conn.execute("""
                         update whatsapp_bot.bot_conversation_states set stage='completed',completed_at=now(),
                           athlete_age=%s,role_answer=%s,metadata=metadata||jsonb_build_object(
@@ -447,14 +449,19 @@ class Database:
                           saved["id"], lead["id"], lead["organization_id"]))
                     booking = {**dict(saved), "seller_name": schedule["display_name"],
                                "display_name": schedule["display_name"], "access_token": token,
-                               "replayed": False}
+                               "service": service, "route_key": route_key, "replayed": False}
+
+        if not booking.get("service"):
+            booking["service"] = service
+        if not booking.get("route_key"):
+            booking["route_key"] = route_key
 
         start_value = booking["starts_at"]
         end_value = booking["ends_at"]
         stamp = lambda value: value.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         params = urlencode({
             "action": "TEMPLATE",
-            "text": f"EC10 | Plano de Carreira | Reunião com {booking['display_name']}",
+            "text": f"EC10 | {booking['service'].replace('_',' ').title()} | Reunião com {booking['display_name']}",
             "dates": f"{stamp(start_value)}/{stamp(end_value)}",
             "details": "Reunião comercial EC10. Os detalhes serão confirmados pelo WhatsApp.",
         })
