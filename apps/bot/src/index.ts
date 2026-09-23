@@ -3,7 +3,6 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import {createHash} from "node:crypto";
 import {AsyncLocalStorage} from 'node:async_hooks';
-import QRCode from "qrcode";
 import qrcode from "qrcode-terminal";
 import pkg from "whatsapp-web.js";
 import { normalizePhone, resolveBrazilTrafficGeo } from "@crm/shared";
@@ -25,6 +24,7 @@ import {
 import {answerEc10SdrQuestion} from './ai.js';
 import {SDR_VERSION, decideEc10Sdr, sdrServiceMenu, sdrOffer, eligibleSdrOffers, explicitSdrHuman, explicitSdrStop, sdrGreeting, type SdrStep} from './sdr-flow.js';
 import { config, hasDirectDatabaseConfig, hasServerSupabaseConfig } from "./config.js";
+import { WhatsAppRuntimeCoordinator, type WhatsAppRuntimeStatus } from "./whatsapp-runtime.js";
 import { conversationRole } from './ec10-learning.mjs';
 import { sendMetaQualityEvent } from "./meta.js";
 import { normalizePollVote, pollParentId, pollVoteMessageId, readWhatsAppPollVotes, serializeWhatsAppKey } from './poll-votes.js';
@@ -193,8 +193,6 @@ const outboundSendLocks = new Map<string, Promise<void>>();
 const careerMeetingGroupLocks = new Map<string, Promise<CareerMeetingGroupResult>>();
 let currentBotStatus = "not_ready";
 let currentBotStatusDetails: Record<string, unknown> = {};
-let statusHeartbeat: ReturnType<typeof setInterval> | null = null;
-let lastQrRuntimePersistAt = 0;
 let reconnectingClient = false;
 let whatsappReady = false;
 let processingOutboundQueue = false;
@@ -6293,8 +6291,8 @@ async function handleEc10ConversationInternal(client: any, chatId: string, clien
   return false;
 }
 
-async function writeStatus(status: string, details: Record<string, unknown> = {}) {
-  const systemDetails = {
+function botRuntimeSystemDetails() {
+  return {
     botInstanceId: config.BOT_INSTANCE_ID,
     botInstanceLabel: config.BOT_INSTANCE_LABEL,
     databaseSchema: config.BOT_DB_SCHEMA,
@@ -6309,57 +6307,37 @@ async function writeStatus(status: string, details: Record<string, unknown> = {}
         ? Boolean(config.GEMINI_API_KEY)
         : Boolean(config.GROQ_API_KEY || config.GEMINI_API_KEY)
   };
-  currentBotStatus = status;
-  currentBotStatusDetails = { ...systemDetails, ...details };
-  const payload = {
-    status,
-    updatedAt: new Date().toISOString(),
-    ...currentBotStatusDetails
-  };
-  await ensureParentDir(config.BOT_STATUS_PATH);
-  await fs.writeFile(
-    resolveProjectPath(config.BOT_STATUS_PATH),
-    JSON.stringify(payload, null, 2)
-  );
+}
+
+const whatsappRuntime = new WhatsAppRuntimeCoordinator({
+  statusPath: config.BOT_STATUS_PATH,
+  qrImagePath: config.BOT_QR_PATH,
+  qrTextPath: config.BOT_QR_TEXT_PATH,
+  heartbeatMs: config.BOT_STATUS_HEARTBEAT_MS,
+  resolvePath: resolveProjectPath,
+  persist: upsertBotRuntime,
+  systemDetails: botRuntimeSystemDetails,
+  onStatus: (status, details) => {
+    currentBotStatus = status;
+    currentBotStatusDetails = details;
+  }
+});
+
+async function writeStatus(status: WhatsAppRuntimeStatus, details: Record<string, unknown> = {}) {
   try {
-    await upsertBotRuntime("bot_status", payload);
+    return await whatsappRuntime.publishStatus(status, details);
   } catch (error) {
-    console.error("Failed to persist bot status remotely", error);
+    console.error("Failed to persist bot status", error);
+    throw error;
   }
 }
 
 function startStatusHeartbeat() {
-  if (statusHeartbeat) return;
-  statusHeartbeat = setInterval(() => {
-    writeStatus(currentBotStatus, {
-      ...currentBotStatusDetails,
-      heartbeat: true
-    }).catch((error) => console.error("Failed to write bot heartbeat", error));
-  }, Math.max(60_000, config.BOT_STATUS_HEARTBEAT_MS));
+  whatsappRuntime.startHeartbeat();
 }
 
 async function persistQr(qr: string) {
-  await ensureParentDir(config.BOT_QR_PATH);
-  await ensureParentDir(config.BOT_QR_TEXT_PATH);
-  await QRCode.toFile(resolveProjectPath(config.BOT_QR_PATH), qr, { margin: 2, width: 360 });
-  await fs.writeFile(resolveProjectPath(config.BOT_QR_TEXT_PATH), qr);
-  const now = Date.now();
-  if (now - lastQrRuntimePersistAt < Math.max(60_000, config.BOT_QR_RUNTIME_PERSIST_MS)) {
-    return false;
-  }
-
-  lastQrRuntimePersistAt = now;
-  const qrDataUrl = await QRCode.toDataURL(qr, { margin: 4, width: 1000 });
-  try {
-    await upsertBotRuntime("whatsapp_qr", {
-      qrDataUrl,
-      updatedAt: new Date(now).toISOString()
-    });
-    return true;
-  } catch (error) {
-    lastQrRuntimePersistAt = 0;
-    throw error;
-  }
+  return whatsappRuntime.publishQr(qr);
 }
 
 async function restartWhatsAppClient(client: any, reason: string) {
@@ -6463,6 +6441,10 @@ function startStatusServer() {
     }
 
     if (url.pathname === "/qr.png") {
+      if (currentBotStatus !== "waiting_qr_scan") {
+        sendJson(response, 404, { error: "QR not required for current transport state" });
+        return;
+      }
       try {
         const qr = await fs.readFile(resolveProjectPath(config.BOT_QR_PATH));
         response.writeHead(200, {
@@ -6605,10 +6587,6 @@ async function main() {
     console.log("Scan this QR Code with the WhatsApp bot number:");
     qrcode.generate(qr, { small: true });
     persistQr(qr)
-      .then((runtimeUpdated) => {
-        if (currentBotStatus === "waiting_qr_scan" && !runtimeUpdated) return;
-        return writeStatus("waiting_qr_scan", { qrPath: resolveProjectPath(config.BOT_QR_PATH) });
-      })
       .catch((error) => console.error("Failed to persist QR Code", error));
   });
 

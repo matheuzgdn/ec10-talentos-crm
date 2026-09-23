@@ -86,6 +86,8 @@ write_status "validating" "$target_commit" "install_build_test"
   npm --workspace @crm/bot run typecheck
   npm --workspace @crm/shared run build
   npm --workspace @crm/bot run build
+  node scripts/test-whatsapp-runtime-refactor.mjs
+  npx tsx scripts/test-whatsapp-runtime-api.ts
   node scripts/scan-repository-secrets.mjs
   node scripts/test-gustavo-fault-injection.mjs
   node scripts/test-gustavo-2026-09-17-regressions.mjs

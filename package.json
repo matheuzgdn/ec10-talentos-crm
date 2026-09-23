@@ -15,6 +15,7 @@
     "typecheck": "npm --workspaces --if-present run typecheck",
     "test:bot": "npm --workspace @crm/bot run build && node scripts/bot-flow-simulations.mjs && node scripts/bot-flow-adversarial.mjs && node scripts/ollama-whatsapp-watchdog.mjs --self-test",
     "test:bot:ollama100": "npm --workspace @crm/bot run build && node scripts/bot-ollama-100-tests.mjs --full-ollama",
+    "test:whatsapp-runtime": "npm --workspace @crm/bot run build && node scripts/test-whatsapp-runtime-refactor.mjs && npx tsx scripts/test-whatsapp-runtime-api.ts",
     "audit:bot": "node scripts/audit-bot-integrity.mjs",
     "watchdog:ollama": "node scripts/ollama-whatsapp-watchdog.mjs --apply --limit 20",
     "campaign:revela": "node scripts/revela-priority-campaign.mjs"
