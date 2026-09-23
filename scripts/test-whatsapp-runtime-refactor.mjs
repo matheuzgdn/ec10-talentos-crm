@@ -8,6 +8,7 @@ const testRoot = await fs.mkdtemp(path.join(os.tmpdir(), "ec10-whatsapp-runtime-
 const persisted = new Map();
 const persistenceHistory = [];
 const botSource = await fs.readFile("apps/bot/src/index.ts", "utf8");
+const connectPageSource = await fs.readFile("apps/painel/public/bot-connect.html", "utf8");
 
 assert.match(botSource, /getReadyAgeMs\(\) < config\.WHATSAPP_HEAVY_OPS_MIN_READY_MS/);
 assert.match(botSource, /fetchRecentInboundRecoveryCandidates\(24, 8\)/);
@@ -17,6 +18,9 @@ assert.doesNotMatch(
 );
 assert.match(botSource, /const primaryChatId = toChatId\(item\.phone\)/);
 assert.match(botSource, /const primaryChatId = toChatId\(phone\)/);
+assert.match(connectPageSource, /qr\.addEventListener\('load',[\s\S]*scheduleQr\(12000\)/);
+assert.match(connectPageSource, /qr\.addEventListener\('error',[\s\S]*scheduleQr\(1800\)/);
+assert.doesNotMatch(connectPageSource, /setInterval\(refreshQr/);
 
 try {
   const runtime = new WhatsAppRuntimeCoordinator({

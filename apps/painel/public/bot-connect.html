@@ -27,15 +27,22 @@
     </main>
     <script>
       const qr=document.getElementById('qr');const card=document.getElementById('card');const label=document.getElementById('label');
-      function refreshQr(){qr.src='/api/bot-qr?instanceId=main&t='+Date.now()}
+      let qrTimer=null;let qrLoading=false;
+      function scheduleQr(delay){clearTimeout(qrTimer);qrTimer=setTimeout(refreshQr,delay)}
+      function refreshQr(){
+        if(qrLoading)return;
+        qrLoading=true;
+        qr.src='/api/bot-qr?instanceId=main&t='+Date.now();
+      }
       async function refreshStatus(){
         try{const r=await fetch('/api/bot-status?instanceId=main&t='+Date.now(),{cache:'no-store'});const s=await r.json();
           if(s.status==='ready'||s.status==='authenticated'){card.classList.add('ready');label.textContent='WhatsApp conectado';return}
           card.classList.remove('ready');label.textContent='Aguardando leitura do QR';
         }catch{label.textContent='Atualizando conexão…'}
       }
-      qr.addEventListener('error',()=>setTimeout(refreshQr,1000));
-      refreshQr();refreshStatus();setInterval(refreshQr,3000);setInterval(refreshStatus,3000);
+      qr.addEventListener('load',()=>{qrLoading=false;scheduleQr(12000)});
+      qr.addEventListener('error',()=>{qrLoading=false;scheduleQr(1800)});
+      refreshQr();refreshStatus();setInterval(refreshStatus,3000);
     </script>
   </body>
 </html>
