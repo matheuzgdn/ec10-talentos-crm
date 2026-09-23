@@ -43,6 +43,9 @@ RESTART_COOLDOWN_SECONDS = int(os.getenv("GUSTAVO_GUARDIAN_RESTART_COOLDOWN_SECO
 RECOVERY_ENABLED = os.getenv("GUSTAVO_GUARDIAN_RECOVERY_ENABLED", "false").strip().lower() in {
     "1", "true", "yes", "on"
 }
+AUTO_RESTART_ENABLED = os.getenv("GUSTAVO_GUARDIAN_AUTO_RESTART_ENABLED", "false").strip().lower() in {
+    "1", "true", "yes", "on"
+}
 DEPLOY_STATUS_FILE = Path(os.getenv(
     "GUSTAVO_GUARDIAN_DEPLOY_STATUS_FILE",
     "/home/opc/ec10-github-sync/status.json",
@@ -321,7 +324,11 @@ def main() -> int:
             manual_reconnect = bot_status in {
                 "waiting_qr_scan", "auth_failure", "authenticated", "loading", "reconnecting"
             }
-            restartable = bot_status in {"unreachable", "degraded", "not_ready"} and not deploy_state
+            restartable = (
+                AUTO_RESTART_ENABLED
+                and bot_status in {"unreachable", "degraded", "not_ready"}
+                and not deploy_state
+            )
             restartable_failures = (
                 int(guardian_state.get("consecutiveRestartableFailures") or 0) + 1
                 if restartable else 0
@@ -341,6 +348,7 @@ def main() -> int:
                 "manualReconnectRequired": manual_reconnect,
                 "deployState": deploy_state,
                 "recoveryEnabled": RECOVERY_ENABLED,
+                "autoRestartEnabled": AUTO_RESTART_ENABLED,
             }))
             return 2
 
@@ -511,6 +519,7 @@ def main() -> int:
             "botStatus": health.get("status"),
             "restartTriggered": restart_triggered,
             "recoveryEnabled": RECOVERY_ENABLED,
+            "autoRestartEnabled": AUTO_RESTART_ENABLED,
         }))
         return 0 if not has_attention else 3
 

@@ -76,6 +76,8 @@ assert.match(guardianSource, /active_deployment\(now\)/);
 assert.match(guardianSource, /consecutiveRestartableFailures/);
 assert.match(guardianSource, /GUSTAVO_GUARDIAN_RECOVERY_ENABLED/);
 assert.match(guardianServiceSource, /GUSTAVO_GUARDIAN_RECOVERY_ENABLED=false/);
+assert.match(guardianSource, /GUSTAVO_GUARDIAN_AUTO_RESTART_ENABLED/);
+assert.match(guardianServiceSource, /GUSTAVO_GUARDIAN_AUTO_RESTART_ENABLED=false/);
 assert.doesNotMatch(guardianSource, /maybe_restart_bot\(guardian_state, "stale_pending_conversations"/);
 assert.match(guardianServiceSource, /SuccessExitStatus=2 3/);
 assert.match(indexSource, /withSdrCustomerTurn\(clientId,phone,\(\)=>handleEc10ConversationInternal/);
