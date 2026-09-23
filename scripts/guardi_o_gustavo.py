@@ -37,6 +37,13 @@ LOOKBACK_HOURS = int(os.getenv("GUSTAVO_GUARDIAN_LOOKBACK_HOURS", "24"))
 MAX_RECOVERIES = int(os.getenv("GUSTAVO_GUARDIAN_MAX_RECOVERIES", "3"))
 HEALTH_URL = os.getenv("GUSTAVO_GUARDIAN_HEALTH_URL", "http://127.0.0.1:3001/health")
 RESTART_COOLDOWN_SECONDS = int(os.getenv("GUSTAVO_GUARDIAN_RESTART_COOLDOWN_SECONDS", "900"))
+RECOVERY_ENABLED = os.getenv("GUSTAVO_GUARDIAN_RECOVERY_ENABLED", "false").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+DEPLOY_STATUS_FILE = Path(os.getenv(
+    "GUSTAVO_GUARDIAN_DEPLOY_STATUS_FILE",
+    "/home/opc/ec10-github-sync/status.json",
+))
 
 
 def load_env(path: Path) -> None:
@@ -115,6 +122,20 @@ def bot_health() -> dict:
             return json.loads(response.read().decode("utf-8"))
     except Exception as error:  # noqa: BLE001 - guardião precisa registrar qualquer indisponibilidade
         return {"ok": False, "status": "unreachable", "reason": type(error).__name__}
+
+
+def active_deployment(now: datetime) -> str | None:
+    try:
+        payload = json.loads(DEPLOY_STATUS_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    state = str(payload.get("state") or "").strip().lower()
+    updated_at = parse_time(payload.get("updatedAt"))
+    if state not in {"validating", "restarting"} or not updated_at:
+        return None
+    if (now - updated_at).total_seconds() > 30 * 60:
+        return None
+    return state
 
 
 def latest_message(client_id: str, direction: str, since: str):
@@ -291,25 +312,37 @@ def main() -> int:
             failures = int(guardian_state.get("consecutiveHealthFailures") or 0) + 1
             guardian_state["consecutiveHealthFailures"] = failures
             bot_status = str(health.get("status") or "unknown")
+            deploy_state = active_deployment(now)
             # QR/auth states require a human scan. Restarting here invalidates the
             # visible QR and can keep the commercial number offline indefinitely.
-            manual_reconnect = bot_status in {"waiting_qr_scan", "auth_failure"}
-            restartable = bot_status in {"unreachable", "degraded", "not_ready"}
-            restarted = restartable and failures >= 3 and maybe_restart_bot(
+            manual_reconnect = bot_status in {
+                "waiting_qr_scan", "auth_failure", "authenticated", "loading", "reconnecting"
+            }
+            restartable = bot_status in {"unreachable", "degraded", "not_ready"} and not deploy_state
+            restartable_failures = (
+                int(guardian_state.get("consecutiveRestartableFailures") or 0) + 1
+                if restartable else 0
+            )
+            guardian_state["consecutiveRestartableFailures"] = restartable_failures
+            restarted = restartable and restartable_failures >= 3 and maybe_restart_bot(
                 guardian_state, "health_not_ready", now
             )
             save_guardian_state(guardian_state)
             print(json.dumps({
                 "status": "attention",
-                "reason": "bot_not_ready",
+                "reason": "deployment_in_progress" if deploy_state else "bot_not_ready",
                 "botStatus": bot_status,
                 "consecutiveFailures": failures,
+                "consecutiveRestartableFailures": restartable_failures,
                 "restartTriggered": restarted,
                 "manualReconnectRequired": manual_reconnect,
+                "deployState": deploy_state,
+                "recoveryEnabled": RECOVERY_ENABLED,
             }))
             return 2
 
         guardian_state["consecutiveHealthFailures"] = 0
+        guardian_state["consecutiveRestartableFailures"] = 0
         monitor_since = parse_time(guardian_state.get("monitorSince"))
         if not monitor_since:
             monitor_since = now
@@ -381,7 +414,9 @@ def main() -> int:
                 if due_at and (now - due_at).total_seconds() >= 300:
                     stale_pending += 1
                     count = int(gustavo.get("guardianRecoveryCount") or 0)
-                    if count < MAX_RECOVERIES:
+                    if not RECOVERY_ENABLED:
+                        attention += 1
+                    elif count < MAX_RECOVERIES:
                         timestamp = iso(now)
                         millis = int(now.timestamp() * 1000)
                         next_metadata = {
@@ -413,6 +448,9 @@ def main() -> int:
                 continue
 
             eligible += 1
+            if not RECOVERY_ENABLED:
+                attention += 1
+                continue
             timestamp = iso(now)
             millis = int(now.timestamp() * 1000)
             next_gustavo = {
@@ -469,6 +507,7 @@ def main() -> int:
             "attentionRequired": attention,
             "botStatus": health.get("status"),
             "restartTriggered": restart_triggered,
+            "recoveryEnabled": RECOVERY_ENABLED,
         }))
         return 0 if not has_attention else 3
 
