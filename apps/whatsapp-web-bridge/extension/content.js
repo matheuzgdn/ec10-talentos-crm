@@ -33,6 +33,19 @@
     return Array.from(document.querySelectorAll('[data-testid^="list-item-"][role="row"]')).filter(row => row.querySelector('[data-testid="icon-unread-count"]'));
   }
 
+  function pendingRows() {
+    const rows = Array.from(document.querySelectorAll('[data-testid^="list-item-"][role="row"]'));
+    if (!includeExisting) return rows.filter(row => row.querySelector('[data-testid="icon-unread-count"]'));
+    return rows.filter(row => {
+      const item = rowKey(row);
+      if (!item.title || !item.preview) return false;
+      if (row.querySelector('[data-testid="icon-unread-count"]')) return true;
+      const outbound = row.querySelector('[data-testid="last-msg-status"],[data-icon="msg-check"],[data-icon="msg-dblcheck"],[data-icon="msg-time"]');
+      const system = /mensagens tempor[aá]rias|messages are end-to-end encrypted|criptografadas de ponta a ponta/i.test(item.preview);
+      return !outbound && !system;
+    });
+  }
+
   function rowKey(row) {
     const title = normalize(row.querySelector('[data-testid="cell-frame-title"]')?.textContent);
     const preview = normalize(row.querySelector('[data-testid="cell-frame-secondary"]')?.textContent);
@@ -117,7 +130,7 @@
     if (!search) throw new Error("search_missing");
     search.focus(); setInputValue(search, `+${phone}`); await sleep(900);
     const candidates = Array.from(document.querySelectorAll('[data-testid^="list-item-"][role="row"]'));
-    const row = candidates.find(item => digits(item.textContent).includes(phone.slice(-9))) || candidates[0];
+    const row = candidates.find(item => digits(item.textContent).includes(phone.slice(-9)));
     if (!row) throw new Error("seller_chat_not_found");
     row.click(); await sleep(500); setInputValue(search, "");
   }
@@ -149,7 +162,7 @@
     if (busy || !started) return;
     busy = true;
     try {
-      const rows = unreadRows();
+      const rows = pendingRows();
       const candidate = rows.find(row => { const item = rowKey(row); return includeExisting || baseline.get(item.title) !== item.fingerprint; });
       if (candidate) await processRow(candidate); else if (await deliverNotification()) badge("Vendedor avisado", "ok"); else badge("Gustavo ativo — aguardando mensagens", "ok");
     } catch (error) { console.warn("EC10 bridge", error); badge(`Gustavo em espera: ${error.message}`, "error"); }

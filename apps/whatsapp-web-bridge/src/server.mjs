@@ -44,6 +44,13 @@ function hashMessage(phone, lastInbound) {
   return crypto.createHash("sha256").update(`${digits(phone)}|${lastInbound.pre}|${lastInbound.text}`).digest("hex");
 }
 
+function safeDisplayName(value) {
+  const normalized = String(value || "").replace(/\s+/g, " ").trim();
+  if (!normalized || !/[A-Za-zÀ-ÖØ-öø-ÿ]/.test(normalized)) return "";
+  if (digits(normalized).length >= 8) return "";
+  return normalized.slice(0, 160);
+}
+
 async function ensureClient(phone, displayName, service, language) {
   const normalized = digits(phone);
   if (normalized.length < 10) throw new Error("contact_phone_unavailable");
@@ -84,7 +91,8 @@ async function handleTurn(payload) {
   if (cached) { await store.markDuplicate(); return { ...cached, cached: true, sent: store.isSent(messageId) }; }
   const language = detectLanguage(history, phone);
   const campaignService = inferCampaignService(history);
-  const client = await ensureClient(phone, payload.displayName, campaignService, language);
+  const displayName = safeDisplayName(payload.displayName);
+  const client = await ensureClient(phone, displayName, campaignService, language);
   if (client.bot_paused || store.isPaused(phone)) return { ignored: true, reason: "human_takeover" };
   await mirrorMessage(client.id, "inbound", lastInbound.text, `web:${messageId}`);
   const age = Number.isInteger(client.athlete_age) ? client.athlete_age : null;
@@ -93,7 +101,7 @@ async function handleTurn(payload) {
   const oracleResponse = await fetch(`${oracleUrl}/oracle/respond`, {
     method: "POST", headers: { "content-type": "application/json" }, signal: AbortSignal.timeout(18_000),
     body: JSON.stringify({ phone, message_id: `web-${messageId}`, inbound: lastInbound.text, client_id: client.id,
-      known_name: client.name || payload.displayName || null, known_age: age, lead_source: "whatsapp_web_local",
+      known_name: client.name || displayName || null, known_age: age, lead_source: "whatsapp_web_local",
       service_interest: service, language, route_key: seller.routeKey })
   });
   if (!oracleResponse.ok) throw new Error(`oracle_${oracleResponse.status}`);
@@ -104,7 +112,7 @@ async function handleTurn(payload) {
   };
   if (oracle.booking) {
     const notification = { phone: seller.phone, seller: seller.name, text: buildSellerNotification({
-      seller, contactName: client.name || payload.displayName, athleteName: oracle.athlete_name,
+      seller, contactName: client.name || displayName, athleteName: oracle.athlete_name,
       athleteAge: oracle.athlete_age, phone, booking: { ...oracle.booking, service_label: service === "plano_internacional" ? "Plano Internacional" : service === "eurocamp" ? "Eurocamp" : "Plano de Carreira" }
     }) };
     await store.queueNotification(`booking:${oracle.booking.id}:${seller.phone}`, notification);
