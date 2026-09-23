@@ -115,6 +115,8 @@ sudo -n systemctl restart "$BOT_SERVICE"
 
 healthy=false
 transport_ready_streak=0
+transport_reconnect_streak=0
+reconnect_required=false
 last_health_json=""
 for _ in $(seq 1 36); do
   if sudo -n systemctl is-active --quiet "$BOT_SERVICE"; then
@@ -126,15 +128,24 @@ for _ in $(seq 1 36); do
         healthy=true
         break
       fi
+      transport_reconnect_streak=0
+    elif grep -Eq '"ok":true' <<<"$health_json" && grep -Eq '"status":"(booting|waiting_qr_scan|authenticated|loading|reconnecting|disconnected)"' <<<"$health_json"; then
+      transport_ready_streak=0
+      transport_reconnect_streak=$((transport_reconnect_streak + 1))
+      if (( transport_reconnect_streak >= 3 )); then
+        reconnect_required=true
+        break
+      fi
     else
       transport_ready_streak=0
+      transport_reconnect_streak=0
     fi
   fi
   sleep 5
 done
 
 if [[ "$healthy" != "true" ]]; then
-  if grep -Eq '"ok":true' <<<"$last_health_json" && grep -Eq '"status":"(waiting_qr_scan|authenticated|loading|reconnecting|disconnected)"' <<<"$last_health_json"; then
+  if [[ "$reconnect_required" == "true" ]]; then
     printf '%s\n' "$target_commit" >"$STATE_FILE"
     write_status "attention" "$target_commit" "deployed_whatsapp_reconnect_required"
     exit 0
