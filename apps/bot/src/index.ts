@@ -699,8 +699,19 @@ async function sendQueuedOutboundMessage(client: any, item: {
   media_mime_type?: string | null;
   media_file_name?: string | null;
 }) {
-  const chatIds = await resolveOutboundChatIds(client, item.phone);
+  const primaryChatId = toChatId(item.phone);
   let lastError: unknown = null;
+
+  // Prefer the canonical phone chat first. Resolving number/LID identifiers makes
+  // additional WhatsApp Web calls and must only be used after a real send failure.
+  try {
+    return await sendMessageWithConfirmation(client, primaryChatId, item);
+  } catch (error) {
+    lastError = error;
+  }
+
+  const chatIds = (await resolveOutboundChatIds(client, item.phone))
+    .filter((chatId) => chatId !== primaryChatId);
 
   for (const chatId of chatIds) {
     try {
@@ -722,8 +733,17 @@ async function sendDirectWhatsAppText(client: any, phone: string, body: string) 
     throw new Error(`Envio WhatsApp pausado: ${pauseReason}`);
   }
 
-  const chatIds = await resolveOutboundChatIds(client, phone);
+  const primaryChatId = toChatId(phone);
   let lastError: unknown = null;
+
+  try {
+    return await sendTextWithConversationConfirmation(client, primaryChatId, body);
+  } catch (error) {
+    lastError = error;
+  }
+
+  const chatIds = (await resolveOutboundChatIds(client, phone))
+    .filter((chatId) => chatId !== primaryChatId);
 
   for (const chatId of chatIds) {
     try {
@@ -6803,24 +6823,35 @@ async function main() {
     if (processingInboundRecovery || !isCurrentWhatsAppClient(client) || !whatsappReady || !isWhatsAppConnected()) return;
     const needsRecovery = startupInboundRecoveryPending || lastInboundPersistenceFailureAt > lastInboundRecoveryAt;
     if (!needsRecovery) return;
+    if (getReadyAgeMs() < config.WHATSAPP_HEAVY_OPS_MIN_READY_MS) return;
+    const runtimeControl = await readBotRuntimeControl();
+    if (
+      !runtimeControl.heavyWhatsAppOpsEnabled
+      || runtimeControl.pauseReason
+      || runtimeControl.outboundQueuePausedUntilMs > Date.now()
+    ) return;
     const persistence = await checkBotPersistenceHealth(true);
     if (!persistence.ok) return;
 
     processingInboundRecovery = true;
     try {
       const cutoffSeconds = Math.floor((Date.now() - 24 * 60 * 60_000) / 1000);
-      const candidates = await fetchRecentInboundRecoveryCandidates(24, 80);
+      // Keep startup recovery deliberately small. A large burst of contact/LID
+      // lookups can make the WhatsApp Web page terminate the linked session.
+      const candidates = await fetchRecentInboundRecoveryCandidates(24, 8);
       let recoveredMessages = 0;
       let recoveredConversations = 0;
 
       for (const candidate of candidates) {
         if (candidate.bot_paused || !shouldRunWhatsAppAutomation(candidate)) continue;
-        const chatIds = await resolveOutboundChatIds(client, candidate.phone);
-        let chat: any = null;
-        for (const chatId of chatIds) {
-          chat = await client.getChatById(chatId).catch(() => null);
-          if (chat && typeof chat.fetchMessages === 'function') break;
+        let chatId: string;
+        try {
+          chatId = toChatId(candidate.phone);
+        } catch {
+          continue;
         }
+        const chatIds = [chatId];
+        const chat = await client.getChatById(chatId).catch(() => null);
         if (!chat || chat.isGroup || typeof chat.fetchMessages !== 'function') continue;
         const messages = (await chat.fetchMessages({ limit: 40 }).catch(() => []))
           .filter((item: any) => !item?.fromMe && Number(item?.timestamp ?? 0) >= cutoffSeconds)
@@ -6882,6 +6913,7 @@ async function main() {
         });
         recoveredMessages += recovered.length;
         recoveredConversations += 1;
+        await wait(750);
       }
 
       startupInboundRecoveryPending = false;

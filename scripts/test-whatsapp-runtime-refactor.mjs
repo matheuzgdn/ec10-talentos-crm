@@ -7,6 +7,16 @@ import { WhatsAppRuntimeCoordinator } from "../apps/bot/dist/whatsapp-runtime.js
 const testRoot = await fs.mkdtemp(path.join(os.tmpdir(), "ec10-whatsapp-runtime-"));
 const persisted = new Map();
 const persistenceHistory = [];
+const botSource = await fs.readFile("apps/bot/src/index.ts", "utf8");
+
+assert.match(botSource, /getReadyAgeMs\(\) < config\.WHATSAPP_HEAVY_OPS_MIN_READY_MS/);
+assert.match(botSource, /fetchRecentInboundRecoveryCandidates\(24, 8\)/);
+assert.doesNotMatch(
+  botSource,
+  /const recoverMissedInboundMessages[\s\S]{0,1800}resolveOutboundChatIds\(client, candidate\.phone\)/,
+);
+assert.match(botSource, /const primaryChatId = toChatId\(item\.phone\)/);
+assert.match(botSource, /const primaryChatId = toChatId\(phone\)/);
 
 try {
   const runtime = new WhatsAppRuntimeCoordinator({
