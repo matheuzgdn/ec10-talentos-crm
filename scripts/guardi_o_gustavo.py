@@ -31,7 +31,10 @@ except ImportError:  # REST continua como rota de contingência.
 ROOT = Path(__file__).resolve().parents[1]
 ENV_FILE = ROOT / ".env"
 LOCK_FILE = Path("/tmp/guardi-o-gustavo.lock")
-STATE_FILE = ROOT / ".runtime" / "guardi-o-gustavo-state.json"
+STATE_FILE = Path(os.getenv(
+    "GUSTAVO_GUARDIAN_STATE_FILE",
+    "/home/opc/cliente-whatsapp-crm/.runtime/guardi-o-gustavo-state.json",
+))
 STALE_SECONDS = int(os.getenv("GUSTAVO_GUARDIAN_STALE_SECONDS", "180"))
 LOOKBACK_HOURS = int(os.getenv("GUSTAVO_GUARDIAN_LOOKBACK_HOURS", "24"))
 MAX_RECOVERIES = int(os.getenv("GUSTAVO_GUARDIAN_MAX_RECOVERIES", "3"))

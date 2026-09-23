@@ -1,5 +1,5 @@
 [Unit]
-Description=Guardiao Gustavo EC10 - recupera conversas sem resposta
+Description=Guardiao Gustavo EC10 - monitora transporte e conversas
 After=network-online.target cliente-whatsapp-crm-bot.service
 Wants=network-online.target
 
