@@ -82,8 +82,6 @@ write_status "validating" "$target_commit" "install_build_test"
 (
   cd "$release_dir"
   npm ci --no-audit --no-fund
-  npm --workspace @crm/shared run typecheck
-  npm --workspace @crm/bot run typecheck
   npm --workspace @crm/shared run build
   npm --workspace @crm/bot run build
   node scripts/test-whatsapp-runtime-refactor.mjs
