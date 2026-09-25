@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { crmApiUrl } from "./lib/crm-api";
 import {
   Bot,
   CheckCircle2,
@@ -40,7 +41,7 @@ type ReviewState = Record<string, "approved" | "corrected" | "rejected">;
 async function labApi<T>(path: string, options: RequestInit = {}) {
   const headers = new Headers(options.headers);
   if (options.body) headers.set("content-type", "application/json");
-  const response = await fetch(path, { ...options, headers, credentials: "include", cache: "no-store" });
+  const response = await fetch(crmApiUrl(path), { ...options, headers, credentials: "include", cache: "no-store" });
   if (!response.ok) {
     const payload = await response.json().catch(() => null);
     throw new Error(payload?.error || "Falha no laboratorio.");

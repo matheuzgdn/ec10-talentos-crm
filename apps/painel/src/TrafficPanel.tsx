@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { crmApiUrl } from "./lib/crm-api";
 import {
   Activity,
   AlertTriangle,
@@ -283,7 +284,7 @@ async function apiJson<T>(path: string, options: RequestInit = {}) {
   const headers = new Headers(options.headers);
   if (options.body && !headers.has("content-type")) headers.set("content-type", "application/json");
 
-  const response = await fetch(path, { ...options, headers, cache: "no-store", credentials: "include" });
+  const response = await fetch(crmApiUrl(path), { ...options, headers, cache: "no-store", credentials: "include" });
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     throw new Error(body?.error ?? (await response.text()) ?? "Falha na requisicao.");
@@ -824,7 +825,7 @@ export function TrafficPanel({ isAdmin }: { isAdmin: boolean }) {
   async function exportTrafficData() {
     setError(null);
     try {
-      const response = await fetch("/api/traffic?action=export&days=180", { cache: "no-store", credentials: "include" });
+      const response = await fetch(crmApiUrl("/api/traffic?action=export&days=180"), { cache: "no-store", credentials: "include" });
       if (!response.ok) {
         const body = await response.json().catch(() => null);
         throw new Error(body?.error ?? "Falha ao exportar dados.");

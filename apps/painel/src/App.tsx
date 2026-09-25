@@ -44,6 +44,7 @@ import { BotLabPanel } from "./BotLabPanel";
 import { TrafficPanel } from "./TrafficPanel";
 import { BhPrimeManager } from "./BhPrimeManager";
 import { HomeDashboard } from "./HomeDashboard";
+import { crmApiUrl } from "./lib/crm-api";
 
 type ViewMode = "home" | "leads" | "campanhas" | "formularios" | "libertacademy" | "pipeline" | "servicos" | "vendedores" | "bot" | "bot_lab" | "trafego" | "bh_prime";
 type AuthMode = "login" | "signup";
@@ -454,7 +455,7 @@ export function App() {
     const headers = new Headers(options.headers);
     if (options.body && !headers.has("content-type")) headers.set("content-type", "application/json");
 
-    const response = await fetch(path, { ...options, headers, cache: "no-store", credentials: "include" });
+    const response = await fetch(crmApiUrl(path), { ...options, headers, cache: "no-store", credentials: "include" });
     if (!response.ok) {
       const body = await response.json().catch(() => null);
       throw new Error(body?.error ?? (await response.text()) ?? "Falha na requisicao.");
@@ -464,7 +465,7 @@ export function App() {
 
   async function loadMe(showError = false) {
     try {
-      const response = await fetch("/api/me", { cache: "no-store", credentials: "include" });
+      const response = await fetch(crmApiUrl("/api/me"), { cache: "no-store", credentials: "include" });
       if (!response.ok) throw new Error((await response.json()).error ?? "Falha ao carregar usuario.");
       const data = (await response.json()) as { seller: SellerRecord };
       setSeller(data.seller);
@@ -501,7 +502,7 @@ export function App() {
   }
 
   async function signOut() {
-    await fetch("/api/auth", {
+    await fetch(crmApiUrl("/api/auth"), {
       method: "POST",
       credentials: "include",
       headers: { "content-type": "application/json" },
@@ -2945,7 +2946,7 @@ function BotPanel({
         const isReady = !botStatus?.stale && (status === "ready" || status === "authenticated");
         const showQr = !isReady && !botStatus?.stale && (status === "waiting_qr_scan" || Boolean(botStatus?.qrPath));
         const isDisconnected = !isReady && !showQr;
-        const qrUrl = `/api/bot-qr?instanceId=${encodeURIComponent(instance.id)}&t=${qrVersion}`;
+        const qrUrl = crmApiUrl(`/api/bot-qr?instanceId=${encodeURIComponent(instance.id)}&t=${qrVersion}`);
 
         return (
           <div className="bot-instance-panel" key={instance.id}>

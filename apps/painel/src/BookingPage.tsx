@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { ArrowLeft, ArrowRight, CalendarDays, Check, Clock3, LockKeyhole, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { crmApiUrl } from "./lib/crm-api";
 import "./booking.css";
 
 type Service = "plano_carreira" | "plano_internacional" | "eurocamp";
@@ -31,7 +32,7 @@ function googleCalendarUrl(booking: Booking) {
 }
 
 async function apiJson(url: string, init?: RequestInit) {
-  const response = await fetch(url, { credentials: "include", ...init });
+  const response = await fetch(crmApiUrl(url), { credentials: "include", ...init });
   if (!response.headers.get("content-type")?.includes("application/json")) {
     throw new Error("A agenda esta temporariamente indisponivel. Tente novamente em instantes.");
   }

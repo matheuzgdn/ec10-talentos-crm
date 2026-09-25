@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { RefreshCw, ShieldCheck, Download, AlertTriangle, Sparkles } from 'lucide-react';
+import { crmApiUrl } from './lib/crm-api';
 import './bh-prime.css';
 
 type Crm = {contacts:number;qualified:number;scheduled:number;attended:number;proposed:number;closed_status:number};
@@ -34,7 +35,7 @@ export function BhPrimeManager() {
       if(busy)return;
       busy=true;setLoading(true);
       try {
-        const response=await fetch('/api/traffic?action=bh-prime',{cache:'no-store',credentials:'include',signal:controller.signal});
+        const response=await fetch(crmApiUrl('/api/traffic?action=bh-prime'),{cache:'no-store',credentials:'include',signal:controller.signal});
         if(!response.ok)throw new Error(`Não foi possível consultar o gerenciador (${response.status}).`);
         setData(await response.json());setError(null);
       }catch(e){if(!controller.signal.aborted)setError(e instanceof Error?e.message:'Consulta indisponível.');}
