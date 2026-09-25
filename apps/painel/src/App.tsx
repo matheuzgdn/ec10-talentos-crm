@@ -43,8 +43,9 @@ import { BookingPage } from "./BookingPage";
 import { BotLabPanel } from "./BotLabPanel";
 import { TrafficPanel } from "./TrafficPanel";
 import { BhPrimeManager } from "./BhPrimeManager";
+import { HomeDashboard } from "./HomeDashboard";
 
-type ViewMode = "leads" | "campanhas" | "formularios" | "libertacademy" | "pipeline" | "servicos" | "vendedores" | "bot" | "bot_lab" | "trafego" | "bh_prime";
+type ViewMode = "home" | "leads" | "campanhas" | "formularios" | "libertacademy" | "pipeline" | "servicos" | "vendedores" | "bot" | "bot_lab" | "trafego" | "bh_prime";
 type AuthMode = "login" | "signup";
 type LeadFolder = "ec10" | "revela" | "todos";
 type LeadBucket = "ativos" | "sem_agenda" | "agendados" | "arquivados" | "todos";
@@ -360,7 +361,7 @@ export function App() {
   const [authLoading, setAuthLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
-  const [viewMode, setViewMode] = useState<ViewMode>(publicPath === "/gerenciador-bh-prime" ? "bh_prime" : "leads");
+  const [viewMode, setViewMode] = useState<ViewMode>(publicPath === "/gerenciador-bh-prime" ? "bh_prime" : "home");
   const [clients, setClients] = useState<ClientWithPreview[]>([]);
   const [campaignClients, setCampaignClients] = useState<ClientWithPreview[]>([]);
   const [activeCampaign, setActiveCampaign] = useState<CampaignFilter>("plano_carreira");
@@ -910,7 +911,10 @@ export function App() {
     const refreshWorkspace = () => {
       if (document.visibilityState !== "visible") return;
       if (viewMode === "campanhas") void loadCampaignClients();
-      else void loadClients();
+      else if (viewMode === "home") {
+        void loadCampaignClients();
+        void loadClients("", "todos", "todos", "todos", "todos", "todas");
+      } else void loadClients();
       void loadBotStatus();
     };
 
@@ -1019,6 +1023,25 @@ export function App() {
           <button type="button" className="ghost-button" onClick={signOut}>Sair</button>
         </div>
       </main>
+    );
+  }
+
+  if (viewMode === "home") {
+    return (
+      <HomeDashboard
+        clients={campaignClients.length ? campaignClients : clients}
+        sellers={sellers}
+        currentSeller={seller}
+        isAdmin={isAdmin}
+        loading={loadingClients || loadingCampaigns}
+        onNavigate={(next) => setViewMode(next as ViewMode)}
+        onRefresh={() => {
+          void loadCampaignClients();
+          void loadClients("", "todos", "todos", "todos", "todos", "todas");
+          if (isAdmin) void loadSellers();
+        }}
+        onSignOut={signOut}
+      />
     );
   }
 
